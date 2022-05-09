@@ -30,6 +30,7 @@ Mostly just event handlers
     def on_disconnect(self):
         """Called when connection is closed."""
         global bucket_app
+        bucket_app.on_nonactivity()
         pass
 
     def on_login(self, username):
@@ -65,6 +66,7 @@ Mostly just event handlers
         "file" is the absolute name of the file just being received.
         """
         global bucket_app
+        bucket_app.on_nonactivity()
         bucket_app.on_file_received(path_cvt_fsyspath_thatexists(file))
         pass
 
@@ -82,6 +84,7 @@ Mostly just event handlers
         "file" is the absolute name of that file.
         """
         global bucket_app
+        bucket_app.on_nonactivity()
         paths = path_cvt_fsyspaths(file)
         for p in paths:
             try:
@@ -206,13 +209,13 @@ Using the ThrottledDTPHandler skeleton so we can get a signal for every packet t
     def recv(self, buffer_size):
         global bucket_app
         chunk = DTPHandler.recv(self, buffer_size)
-        bucket_app.signal_dtp()
+        bucket_app.on_activity()
         return chunk
 
     def send(self, data):
         global bucket_app
         num_sent = DTPHandler.send(self, data)
-        bucket_app.signal_dtp()
+        bucket_app.on_activity()
         return num_sent
 
 def path_is_image_file(path):
@@ -337,14 +340,20 @@ def start_ftp_server(app = None):
     if bucket_app is None:
         authorizer.add_user('user', '12345', os.getcwd(), perm='elradfmwMT')
     else:
-        authorizer.add_user(bucket_app.cfg_get_username(), bucket_app.cfg_get_userpassword(), os.getcwd(), perm='elradfmwMT')
+        authorizer.add_user(bucket_app.cfg_get_ftpusername(), bucket_app.cfg_get_ftppassword(), os.getcwd(), perm='elradfmwMT')
 
     ftp_handler               = BucketFtpHandler
     ftp_handler.authorizer    = authorizer
     ftp_handler.dtp_handler   = BucketDtpHandler
     ftp_handler.abstracted_fs = BucketFtpFilesystem
 
-    server = ThreadedFTPServer(('', 2121), ftp_handler)
+    port = 2121
+    if bucket_app is not None:
+        port = bucket_app.cfg_get_ftpport()
+
+    server = ThreadedFTPServer(('', port), ftp_handler)
+    if bucket_app is not None:
+        bucket_app.server = server
     server.serve_forever()
     return server
 
