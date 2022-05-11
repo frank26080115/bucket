@@ -2,9 +2,15 @@
 
 import sys, time, subprocess
 
-import board, busio
-import RPi.GPIO as GPIO
-from gpiozero import Button
+is_embedded = True
+
+try:
+    import board, busio
+    import RPi.GPIO as GPIO
+    from gpiozero import Button
+except:
+    is_embedded = False
+    import cv2, numpy
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -34,11 +40,11 @@ I2CADDR_ADC  = (0xC8 >> 1)
 class BucketIO:
 
     def __init__(self):
-        self.buzzer_on = 0
+        self.is_sim = False
+        self.buzzer_is_on = 0
         self.batt_raw  = [-1, -1]
         self.batt_volt = [-1, -1]
         self.batt_chg  = [-100, -100]
-        pass
 
     def hw_init(self):
         self.pin_oledreset = gpiozero.DigitalOutputDevice(PIN_OLED_RESET, initial_value=False)
@@ -64,27 +70,26 @@ class BucketIO:
                 0xA0,             # Bottom View no segment remap
                 0xC0,             # Bottom View COM scan direction normal
                 0x2E,             # StartColumnAddress
-                0x8D, 0x95,       # Switch Charge Pump (9V)
-                0x20, 0x02,       # Set Memory AddressMode
-                0x81, 0xFF,       # Set Brightness
-                0xD5, 0x40,       # Set Display Clock Divide
-                0xD9, 0xF1,       # Set Precharge Period
-                0xAD, 0x30,       # Set Internal Ref
-                0x21, 0x0D, 0x72, # Set ColumnAddress
-                0x22, 0x00, 0x3F, # Set PageAddress
-                0xAF,             # Display on
+                0x8D, 0x95,       # Switch Charge Pump (9V)
+                0x20, 0x02,       # Set Memory AddressMode
+                0x81, 0xFF,       # Set Brightness
+                0xD5, 0x40,       # Set Display Clock Divide
+                0xD9, 0xF1,       # Set Precharge Period
+                0xAD, 0x30,       # Set Internal Ref
+                0x21, 0x0D, 0x72, # Set ColumnAddress
+                0x22, 0x00, 0x3F, # Set PageAddress
+                0xAF,             # Display on
             ]
         for c in cmds:
             self.oled_txcmd(c)
-        pass
+        self.image = Image.new("1", (OLED_WIDTH, OLED_HEIGHT))
+        self.imagedraw = ImageDraw.Draw(self.image)
 
     def oled_txcmd(self, c):
         self.i2c.writeto(I2CADDR_OLED, bytes([c]))
 
     def oled_blankimage(self):
-        self.image = Image.new("1", (self.disp.width, self.disp.height))
-        self.imagedraw = ImageDraw.Draw(self.image)
-        self.imagedraw.rectangle((0, 0, self.disp.width, self.disp.height), outline=0, fill=0)
+        self.imagedraw.rectangle((0, 0, OLED_WIDTH, OLED_HEIGHT), outline=0, fill=0)
 
     def oled_show(self):
         self.disp.image(self.image)
@@ -113,6 +118,41 @@ class BucketIO:
         self.batt_chg [1] = voltage_to_charge(self.batt_volt[1])
 
         return self.batt_raw, self.batt_volt, self.batt_chg
+
+    def buzzer_on(self):
+        self.buzzer_is_on = time.monotonic()
+        self.buzzer.on()
+
+    def buzzer_off(self):
+        self.buzzer_is_on = 0
+        self.buzzer.off()
+
+    def pop_button(self):
+        return 0
+
+class BucketIO_Simulator:
+    def __init__(self):
+        self.is_sim = True
+        self.image = Image.new("1", (OLED_WIDTH + 2, OLED_HEIGHT + 2))
+        self.imagedraw = ImageDraw.Draw(self.image)
+        self.oled_blankimage()
+
+    def oled_blankimage(self):
+        self.imagedraw.rectangle((0, 0, OLED_WIDTH + 2, OLED_HEIGHT + 2), outline=0, fill=0)
+
+    def oled_show(self):
+        npimg = numpy.array(self.image.convert('RGB'))
+        cv2.imshow("img", npimg)
+        cv2.waitKey(1)
+
+    def batt_read(self):
+        return [2048, 2048], [8.4, 8.4], [100, 100]
+
+    def pop_button(self):
+        return 0
+
+    def is_btn_held(self, num):
+        return False
 
 def adc_to_voltage(x):
     if x < 0:
@@ -146,6 +186,9 @@ def voltage_to_charge(x):
     return -100 # past last table element
 
 def has_rtc():
+    global is_embedded
+    if is_embedded == False:
+        return False
     x = os.system("hwclock -rv >/dev/null")
     if x == 0:
         return True

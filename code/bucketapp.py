@@ -1,45 +1,61 @@
 #!/usr/bin/env python3
 
-import os, sys, time, datetime, shutil, subprocess, signal, random
-import threading, queue
+import os, sys, time, datetime, shutil, subprocess, signal, random, math
+import threading, queue, socket
+import psutil
 
-from bucketio import *
+from PIL import Image, ImageDraw, ImageFont, ExifTags
+from pyftpdlib.log import logger, config_logging, debug
 
-from PIL import Image, ExifTags
+import bucketio
 
 bucket_app = None
 
 CONFIG_FILE_NAME    = "bucket_cfg.json"
 LAST_TIME_FILE_NAME = "lasttime.txt"
 LOW_SPACE_THRESH_MB = 200
+LOW_BATT_THRESH     = 10
+
+ALARMFLAG_DISKFULL   = 1
+ALARMFLAG_LOSTFILE = 2
+ALARMFLAG_BATTLOW    = 4
+
+UX_LINESPACE = 0
+
+UXSCREEN_MAIN = 0
+UXSCREEN_MENU = 1
 
 class BucketApp:
-
-    def __init__(self):
+    def __init__(self, hwio = None):
         global bucket_app
         bucket_app = self
         self.disks = []
         self.cfg = None
         self.server = None
-        self.hwio = None
+        self.hwio = hwio
+        self.has_rtc = bucketio.has_rtc()
+        self.has_date = None
+        self.cloning_enaged = False
+        self.last_file = None
+        self.last_file_date = None
+        self.start_monotonic_time = time.monotonic()
+        self.session_last_act     = None
+        self.session_last_nonact  = None
+        self.alarm_reason = 0
+        self.batt_lowest  = 100
+        self.reset_stats()
+
+        self.font = ImageFont.truetype("04b03mod.ttf", size = 8)
+        self.font_has_lower = True
+        self.last_frame_time = 0
+        self.ux_frame_cnt    = 0
+        self.ux_screen       = UXSCREEN_MAIN
+
         self.copy_queue = queue.Queue()
         self.copy_filesize   = 0
         self.copy_fileremain = 0
         self.copy_thread = threading.Thread(target=self.copy_worker, daemon=True)
         self.copy_thread.start()
-        self.cloning_enaged = False
-        self.last_file = None
-        self.last_file_date = None
-        self.has_rtc = bucketio.has_rtc()
-        self.start_monotonic_time = time.monotonic()
-        self.session_first_number = None
-        self.session_last_number  = None
-        self.session_total_cnt    = 0
-        self.session_lost_cnt     = 0
-        self.session_lost_list    = []
-        self.session_last_act     = None
-        self.session_last_nonact  = None
-        self.alarm_latch = False
 
     def reset_stats(self):
         self.session_first_number = None
@@ -47,6 +63,13 @@ class BucketApp:
         self.session_total_cnt    = 0
         self.session_lost_cnt     = 0
         self.session_lost_list    = []
+        self.both_file_types      = 0
+        self.fsize_idx            = 0
+        self.fsize_list           = [0] * 6
+        self.fsize_avg            = 80 # start with a worse case estimate
+
+    def reset_alarm(self):
+        self.alarm_reason = 0
 
     def update_disk_list(self):
         partitions = get_mounted_disks()
@@ -116,9 +139,6 @@ class BucketApp:
     def get_elapsed_secs(self):
         return time.monotonic() - self.start_monotonic_time
 
-    def get_clock_str(self):
-        return "CLK: 20" + self.get_date_str() + " +" + str(round(self.get_elapsed_secs())) + "s"
-
     def on_activity(self):
         self.session_last_act = time.monotonic()
 
@@ -146,7 +166,7 @@ class BucketApp:
                             self.last_file_date = datetime.datetime.strptime(tstr, "%Y:%m:%d %H:%M:%S")
                         break
                 except Exception as ex:
-                    print("Failed to load last-time file at \"" + path + "\", exception: " + str(ex))
+                    logger.error("Failed to load last-time file at \"" + path + "\", exception: " + str(ex))
 
         # look on all disks for the config file
         for d in disks:
@@ -157,7 +177,7 @@ class BucketApp:
                         self.cfg = json.load(f) # loads a file as a dictionary
                     return
                 except Exception as ex:
-                    print("Failed to load JSON cfg file at \"" + path + "\", exception: " + str(ex))
+                    logger.error("Failed to load JSON cfg file at \"" + path + "\", exception: " + str(ex))
 
     def cfg_get_genericstring(self, key, defval):
         result = defval
@@ -254,6 +274,14 @@ class BucketApp:
     def cfg_get_ftpport(self):
         return self.cfg_get_genericint("ftp_port", 2121)
 
+    def on_before_open(self, filename):
+        isimg, filename, filedatecode, filenumber, fileext = bucketftp.path_is_image_file(path)
+        israw = bucketftp.ext_is_raw(fileext)
+        if isimg and israw:
+            fnum = int(filenumber)
+            if self.session_first_number is None:
+                self.session_first_number = fnum
+
     def on_file_received(self, file):
         self.last_file = file
 
@@ -266,19 +294,33 @@ class BucketApp:
                 with open(timefilename, "w") as timefile:
                     timefile.write(self.has_date.strftime("%Y:%m:%d %H:%M:%S"))
             except Exception as ex:
-                print("Error writing last-time file, exception: " + str(ex))
+                logger.error("Error writing last-time file, exception: " + str(ex))
 
         isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(path)
-        rawexts = self.cfg_get_extensions(key="raw_extensions", defval=["arw"]) # if raw file is not enabled on camera, then the cfg file should change this to jpg
-        israw = False # ideally we only count statistics for raw files, otherwise this code can lose a raw file and not notify the user when the corresponding jpg file exists
-        for re in rawexts:
-            if re.lower() == fileext.lower():
-                israw = True
-                break
+        israw = bucketftp.ext_is_raw(fileext) # ideally we only count statistics for raw files, otherwise this code can lose a raw file and not notify the user when the corresponding jpg file exists
+        fnum = int(filenumber)
+
+        # use consecutive identical numbers as an indicator that the camera is in raw+jpg mode
+        if self.session_last_number is not None:
+            if self.session_last_number == fnum and self.both_file_types < 10:
+                self.both_file_types += 2
+            elif self.both_file_types > 0:
+                self.both_file_types -= 1
+
+        if isimg:
+            # use a running average list of the previous multiple file sizes
+            fsize = ceil(os.path.getsize(file) / 1024 / 1024)
+            if fsize > 0:
+                self.fsize_list[self.fsize_idx] = fsize
+                self.fsize_idx = (self.fsize_idx + 1) % len(self.fsize_list)
+                if 0 not in self.fsize_list:
+                    self.fsize_avg = ceil(sum(self.fsize_list) / len(self.fsize_list))
+                    if self.both_file_types > 4:
+                        self.fsize_avg *= 2
+
         if isimg and israw:
             # update the session statistics
             self.session_total_cnt += 1
-            fnum = int(filenumber)
             if self.session_first_number is None:
                 self.session_first_number = fnum
             if self.session_last_number is not None:
@@ -292,7 +334,7 @@ class BucketApp:
                     diff -= 1
                 self.session_lost_cnt += diff
                 if diff > 0: # if we do lose a file, raise the alarm
-                    self.alarm_latch = True
+                    self.on_lost_file()
                     i = 0
                     while i < diff:
                         lnum = fnum - i - 1
@@ -300,6 +342,9 @@ class BucketApp:
                             lnum += 10000
                         self.session_lost_list.append(lnum)
             self.session_last_number = fnum # update this after the delta check
+            if len(self.session_lost_list) > 0:
+                while fnum in self.session_lost_list:
+                    self.session_lost_list.remove(fnum)
 
         self.update_disk_list()
         if len(self.disks) <= 1:
@@ -340,6 +385,12 @@ class BucketApp:
                         self.copy_queue.put(origfile + ";" + destfile) # enqueue the task
                         return # only do one
         time.sleep(2) # nothing to do!
+
+    def on_disk_full(self):
+        self.alarm_reason |= ALARMFLAG_DISKFULL
+
+    def on_lost_file(self):
+        self.alarm_reason |= ALARMFLAG_LOSTFILE
 
     def copy_worker(self):
         try:
@@ -392,20 +443,286 @@ class BucketApp:
                     self.copy_filesize   = 0
                     self.copy_fileremain = 0
                 except Exception as ex2:
-                    print("Copy thread inner exception: " + str(ex2))
+                    logger.error("Copy thread inner exception: " + str(ex2))
                     time.sleep(0.1)
         except Exception as ex1:
-            print("Copy thread outer exception: " + str(ex1))
+            logger.error("Copy thread outer exception: " + str(ex1))
             self.copy_thread = None
             pass
 
     def ux_frame(self):
         tnow = time.monotonic()
+        # run this every 1/5th of a second
         if (tnow - self.last_frame_time) < 0.2:
-            time.sleep(0.02)
+            time.sleep(0.02) # otherwise yield to another thread
             return
         self.last_frame_time = tnow
         self.ux_frame_cnt += 1
+
+        pad = 1 if self.hwio.is_sim else 0
+        y = 0
+        (font_width, font_height) = self.font.getsize("X")
+        self.hwio.oled_blankimage()
+
+        if self.ux_screen == UXSCREEN_MAIN:
+            if self.alarm_reason == 0:
+                self.ux_show_clock(y, pad)
+                y += font_height + UX_LINESPACE
+                self.ux_show_batt(y, pad, (self.ux_frame_cnt % 20) < 10)
+                y += font_height + UX_LINESPACE
+            else:
+                tmod = (self.ux_frame_cnt % 30)
+                if tmod < 10:
+                    self.ux_show_clock(y, pad)
+                else:
+                    self.ux_show_batt(y, pad, (tmod < 20))
+                y += font_height + UX_LINESPACE
+                self.ux_show_warnings(y, pad)
+                y += font_height + UX_LINESPACE
+
+            self.ux_show_wifi(y, pad)
+            y += font_height + UX_LINESPACE
+
+            self.ux_show_session(y, pad)
+            y += font_height + UX_LINESPACE
+
+            self.ux_show_disks(y, pad)
+            y += font_height + UX_LINESPACE
+
+            if len(self.session_lost_list) > 0:
+                self.ux_show_lost(y, pad)
+                y += font_height + UX_LINESPACE
+
+            y = bucketio.OLED_HEIGHT - font_height
+            self.hwio.imagedraw.text((pad, pad+y), "MENU", font=self.font, fill=255)
+            if self.hwio.pop_button() == 1:
+                self.ux_screen = UXSCREEN_MENU
+                self.ux_menu.reset_state()
+        elif self.ux_screen == UXSCREEN_MENU:
+            self.ux_menu.run()
+
+        self.hwio.oled_show()
+
+    def ux_show_timesliced_texts(self, y, pad, prefix, textlist, period):
+        tmod = self.ux_frame_cnt % (period * (len(textlist)))
+        i = 0
+        while i < len(textlist):
+            if tmod < (period * (i + 1)):
+                self.hwio.imagedraw.text((pad, pad+y), prefix + textlist[i], font=self.font, fill=255)
+                return
+            i += 1
+
+    def ux_show_clock(self, y, pad):
+        secstr = str(round(self.get_elapsed_secs()))
+        clkstrhead = "CLK:  " + self.get_date_str() + " +"
+        clkstr = clkstrhead + secstr + "s"
+        (font_width, font_height) = self.font.getsize(clkstr)
+        if font_width > (bucketio.OLED_WIDTH - (pad * 2)):
+            clkstr = clkstrhead + secstr
+            (font_width, font_height) = self.font.getsize(clkstr)
+            if font_width > (bucketio.OLED_WIDTH - (pad * 2)):
+                clkstrhead = "CLK:" + self.get_date_str() + "+"
+                clkstr = clkstrhead + secstr
+                (font_width, font_height) = self.font.getsize(clkstr)
+                if font_width > (bucketio.OLED_WIDTH - (pad * 2)):
+                    clkstrhead = "T:" + self.get_date_str() + "+"
+                    clkstr = clkstrhead + secstr
+                    (font_width, font_height) = self.font.getsize(clkstr)
+                    while font_width > (bucketio.OLED_WIDTH - (pad * 2)):
+                        secstr = secstr[1:]
+                        clkstr = clkstrhead + secstr
+                        (font_width, font_height) = self.font.getsize(clkstr)
+        self.hwio.imagedraw.text((pad, pad+y), clkstr, font=self.font, fill=255)
+
+    def ux_show_batt(self, y, pad, use_volts):
+        batt_raws, batt_volts, batt_chgs = self.hwio.batt_read()
+        higher_batt = max(batt_chgs)
+        if higher_batt < self.batt_lowest:
+            if self.batt_lowest >= LOW_BATT_THRESH and higher_batt < LOW_BATT_THRESH:
+                self.alarm_reason |= ALARMFLAG_BATTLOW
+            self.batt_lowest = higher_batt
+        str = "BATT: "
+        if use_volts:
+            for i in batt_volts:
+                str += "%.2fV  " % i
+        else:
+            for i in batt_chgs:
+                str += "%4d%%  " % round(i)
+        self.hwio.imagedraw.text((pad, pad+y), str.rstrip(), font=self.font, fill=255)
+
+    def ux_show_warnings(self, y, pad):
+        hdr = "WARN: "
+        str2 = ""
+        if (self.alarm_reason & ALARMFLAG_DISKFULL) != 0:
+            str2 += "FULL "
+        if (self.alarm_reason & ALARMFLAG_BATTLOW) != 0:
+            str2 += "BATT "
+        if (self.alarm_reason & ALARMFLAG_LOSTFILE) != 0:
+            str2 += "LOST "
+        str2 = str2.rstrip()
+        (font_width, font_height) = self.font.getsize(hdr + str2)
+        if font_width < (bucketio.OLED_WIDTH - (pad * 2)):
+            self.hwio.imagedraw.text((pad, pad+y), hdr + str2, font=self.font, fill=255)
+        else:
+            parts = str2.split(' ')
+            txtlist = []
+            if len(parts) == 1:
+                txtlist.append(parts[0])
+            else:
+                for w in parts:
+                    txtlist.append(w + "...")
+            self.ux_show_timesliced_texts(y, pad, hdr, txtlist, 4)
+
+    def ux_show_wifi(self, y, pad):
+        hdr = "WIFI: "
+        txtlist = []
+
+        ipstr = get_wifi_ip()
+        nstr = hdr + ipstr
+        (font_width, font_height) = self.font.getsize(nstr)
+        if font_width < (bucketio.OLED_WIDTH - (pad * 2)):
+            txtlist.append(ipstr)
+        else:
+            ipparts = ipstr.split('.')
+            if (self.ux_frame_cnt % 10) < 5:
+                txtlist.append(ipparts[0] + "." + ipparts[1] + "...")
+            else:
+                txtlist.append("..." + ipparts[2] + "." + ipparts[3])
+
+        ssid = get_wifi_ssid()
+        if ssid is not None and len(ssid) > 0:
+            (font_width, font_height) = self.font.getsize(hdr + ssid)
+            if font_width < (bucketio.OLED_WIDTH - (pad * 2)):
+                txtlist.append(ssid)
+            else:
+                while font_width > (bucketio.OLED_WIDTH - (pad * 2)):
+                    ssid = ssid[0:-1]
+                    (font_width, font_height) = self.font.getsize(hdr + ssid + "...")
+                txtlist.append(ssid)
+
+        if self.session_last_act is not None and (time.monotonic() - self.session_last_act) < 2:
+            if self.font_has_lower:
+                i = math.floor(self.ux_frame_cnt / 2) % (len(hdr) - 2)
+                c = hdr[i].lower()
+                nstr = hdr[0:i] + c + hdr[i+1:]
+                hdr = nstr
+        elif self.session_last_act is not None:
+            tsec = time.monotonic() - self.session_last_act
+            if tsec <= 120:
+                txtlist.append("-%d " % (round(tsec)))
+            else:
+                tmin = tsec / 60
+                txtlist.append("-%.1fm " % (tmin))
+        self.ux_show_timesliced_texts(y, pad, hdr, txtlist, 7)
+
+    def ux_show_session(self, y, pad):
+        if self.session_first_number is None:
+            self.hwio.imagedraw.text((pad, pad+y), "NEW SESSION", font=self.font, fill=255)
+            return
+        tmod = (self.ux_frame_cnt % (5 * 3))
+        if tmod < (5 * 1):
+            str = "SESS: %d~" % (self.session_first_number)
+            if self.session_last_number is not None:
+                str += "%d" % self.session_last_number
+            else:
+                str += "?"
+        elif tmod < (5 * 2):
+            str = "TOT: %d" % (self.session_total_cnt)
+        elif tmod < (5 * 3):
+            str = "LOST: %d" % (self.session_lost_cnt)
+        if (time.monotonic() - self.session_last_act) < 2:
+            if self.font_has_lower:
+                r = random.randint(0, 3)
+                c = str[r]
+                str = str[0:r] + c.tolower() + str[r + 1:]
+            else:
+                tmod = self.ux_frame_cnt % (2 * 5)
+                if tmod < (2 * 1):
+                    str = ">" + str
+                elif tmod < (2 * 2):
+                    str = "=" + str
+                elif tmod < (2 * 3):
+                    str = "-" + str
+                elif tmod < (2 * 4):
+                    str = "=" + str
+        (font_width, font_height) = self.font.getsize(str)
+        if font_width > (bucketio.OLED_WIDTH - (pad * 2)):
+            str = str.replace(" ", "")
+        self.hwio.imagedraw.text((pad, pad+y), str.rstrip(), font=self.font, fill=255)
+
+    def ux_show_disks(self, y, pad):
+        self.update_disk_list()
+        if len(self.disks) <= 0:
+            self.hwio.imagedraw.text((pad, pad+y), "NO DISK", font=self.font, fill=255)
+            return
+        txtlist = []
+        disk_idx = 0
+        disk_cnt = len(self.disks)
+        # for all disks
+        while disk_idx < disk_cnt:
+            disk = self.disks[disk_idx]
+            # show which disk
+            if disk_idx == 0:
+                if disk_cnt > 1:
+                    idc = "[M]: "
+                else:
+                    idc = ": "
+            else:
+                idc = "[%d]: " % disk_idx
+            str1 = "DISK" + idc
+            str2 = "FREE@@" + idc
+            total, free = get_disk_stats(disk)
+            is_copying = disk_idx > 0 and self.copy_filesize > 0 and self.copy_fileremain > 0 # indicate cloning is active
+            (font_width, font_height) = self.font.getsize(str1 + (">" if is_copying else "") + disk)
+            if font_width > (bucketio.OLED_WIDTH - (pad * 2)):
+                # shorten the disk name to fit screen
+                disk = disk[1:]
+                disk = disk[disk.index(os.path.sep):]
+            txtlist.append(str1 + (">" if is_copying else "") + disk)
+            if self.fsize_avg > 0:
+                left = math.floor(free / self.fsize_avg) # calculate how many images can be saved
+                str3 = ("%d" % (left)) + ("?" if 0 in self.fsize_list else "") # append unsure indicator if required
+            else:
+                str3 = "???"
+            str3 = (">" if is_copying else "") + str3
+
+            # here's a messy way of checking if the string will fit the screen
+            # if it doesn't, then we shrink it until it does
+            (font_width, font_height) = self.font.getsize(str1 + str3)
+            if font_width > (bucketio.OLED_WIDTH - (pad * 2)):
+                str1 = "DSK" + str1[4:].strip()
+                str1 = "REM" + str2[4:].strip()
+                (font_width, font_height) = self.font.getsize(str1 + str3)
+                if font_width > (bucketio.OLED_WIDTH - (pad * 2)):
+                    if disk_idx == 0:
+                        str1 = "DISK:"
+                        str2 = "FREE:"
+                    else:
+                        if disk_cnt > 1:
+                            str1 = "DSK%d:" % disk_idx
+                            str2 = "REM%d:" % disk_idx
+                        else:
+                            str1 = "DSK:"
+                            str2 = "REM:"
+                    (font_width, font_height) = self.font.getsize(str1 + str3)
+                    if font_width > (bucketio.OLED_WIDTH - (pad * 2)):
+                        str3 = (">" if is_copying else "") + "999999999999" # in the end, we eventually stop being able to show big numbers, so we make the number look big with 9s
+                        (font_width, font_height) = self.font.getsize(str1 + str3)
+                        while font_width > (bucketio.OLED_WIDTH - (pad * 2)):
+                            str3 = str3[0:-1]
+                            (font_width, font_height) = self.font.getsize(str1 + str3 + "+")
+                        str3 += "+"
+            txtlist.append(str1 + str3)
+            txtlist.append(str2 + str3)
+            # two similar entries occupies two consecutive time slots
+            disk_idx += 1
+        self.ux_show_timesliced_texts(y, pad, "", txtlist, 3)
+
+    def ux_show_lost(self, y, pad):
+        str = "LOST: %d" % self.session_lost_list[0]
+        if len(self.session_lost_list) > 1:
+            str += " ..."
+        self.hwio.imagedraw.text((pad, pad+y), str.rstrip(), font=self.font, fill=255)
 
 def get_img_exif_date(file):
     if file is None:
@@ -426,7 +743,7 @@ def get_img_exif_date(file):
         estr = "Unable to parse EXIF date from file \"" + file + "\", "
         if len(tval) > 0:
             estr += " tag val: \"" + tval + "\", "
-        print(estr + "exception: " + str(ex))
+        logger.error(estr + "exception: " + str(ex))
     return None
 
 def get_mounted_disks():
@@ -434,10 +751,16 @@ def get_mounted_disks():
     partitions = psutil.disk_partitions()
     for p in partitions:
         if ((p.mountpoint.startswith("/mnt/") and len(p.mountpoint) > 5) or (p.mountpoint.startswith("/mount/") and len(p.mountpoint) > 7) or (p.mountpoint.startswith("/media/") and len(p.mountpoint) > 7)) and ("fat" in p.fstype):
-            list.append(p.mountpoint)
-    return p
+            t, f = get_disk_stats(p.mountpoint)
+            if t > 0 and f > 0:
+                list.append(p.mountpoint)
+        elif len(p.mountpoint) == 3 and p.mountpoint[1] == ':' and p.mountpoint[0].isalpha() and p.mountpoint[0].isupper() and p.mountpoint[0] != 'C' and p.mountpoint[2] == os.path.sep:
+            t, f = get_disk_stats(p.mountpoint)
+            if t > 0 and f > 0:
+                list.append(p.mountpoint)
+    return list
 
-def get_disk_stats(self, path):
+def get_disk_stats(path):
     total = 0
     free = 0
     try:
@@ -447,7 +770,7 @@ def get_disk_stats(self, path):
     except:
         pass
     try:
-        total, used, free = shutil.disk_usage(__file__)
+        total, used, free = shutil.disk_usage(path)
     except:
         pass
     return total / 1024 / 1024, free / 1024 / 1024 # return in megabytes
@@ -455,7 +778,7 @@ def get_disk_stats(self, path):
 def disk_sort_func(x):
     global bucket_app
     total, free = get_disk_stats(x)
-    if bucket_app.cfg_disk_prefer_total_vs_free():
+    if bucket_app is None or bucket_app.cfg_disk_prefer_total_vs_free():
         return total
     else:
         return free
@@ -474,7 +797,43 @@ def find_mount_point(path):
         path = os.path.dirname(path)
     return path
 
+def get_wifi_ip():
+    #if os.name == 'nt':
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))
+    return str(s.getsockname()[0])
+
+def get_wifi_ssid():
+    if os.name != "nt":
+        try:
+            ssid = os.popen("sudo iwgetid -r").read()
+            ssid = ssid.strip()
+            if len(ssid.strip()) > 0:
+                return ssid
+        except:
+            pass
+    else:
+        return "Test SSID"
+    try:
+        r = subprocess.run(["netsh", "wlan", "show", "network"], capture_output=True, text=True).stdout
+        ls = r.split("\n")
+        ssids = [k for k in ls if 'SSID' in k]
+        for ssid in ssids:
+            s = ssid.strip()
+            if len(s) > 0:
+                return s
+    except:
+        pass
+    return ""
+
 def main():
+    x = get_mounted_disks()
+    x.sort(reverse = True, key = disk_sort_func)
+    for i in x:
+        total, free = get_disk_stats(i)
+        print("%s : %d/%d" % (i, free, total))
+    x = get_img_exif_date("F:\\Pictures\\Photography2022\\220509-10020509\\DSC22050909550.JPG")
+    print(x)
     return 0
 
 if __name__ == "__main__":

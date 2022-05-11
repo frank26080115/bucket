@@ -1,41 +1,41 @@
 #!/usr/bin/env python3
 
-import os
+import os, sys, time, datetime
 
-from bucketio import *
 from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler, ThrottledDTPHandler, DTPHandler
 from pyftpdlib.servers import FTPServer, ThreadedFTPServer
 from pyftpdlib.filesystems import AbstractedFS, FilesystemError
+from pyftpdlib.log import logger, config_logging, debug
+
+import bucketapp, bucketio
 
 bucket_app = None
 
-def register_bucket_app(app):
-    global bucket_app
-    bucket_app = app
-
 class BucketFtpHandler(FTPHandler):
-
-"""
-Mostly just event handlers
-"""
+    """
+    Mostly just event handlers
+    """
 
     def on_connect(self):
         """Called when client connects, *before* sending the initial
         220 reply.
         """
         global bucket_app
+        logger.info("BucketFtpHandler - on_connect")
         pass
 
     def on_disconnect(self):
         """Called when connection is closed."""
         global bucket_app
+        logger.info("BucketFtpHandler - on_disconnect")
         bucket_app.on_nonactivity()
         pass
 
     def on_login(self, username):
         """Called on user login."""
         global bucket_app
+        logger.info("BucketFtpHandler - on_login: " + username)
         pass
 
     def on_login_failed(self, username, password):
@@ -44,6 +44,7 @@ Mostly just event handlers
         failed too many times.
         """
         global bucket_app
+        logger.info("BucketFtpHandler - on_login_failed: " + username)
         pass
 
     def on_logout(self, username):
@@ -52,6 +53,7 @@ Mostly just event handlers
         is simply closed by client.
         """
         global bucket_app
+        logger.info("BucketFtpHandler - on_logout: " + username)
         pass
 
     def on_file_sent(self, file):
@@ -59,6 +61,7 @@ Mostly just event handlers
         "file" is the absolute name of the file just being sent.
         """
         global bucket_app
+        logger.info("BucketFtpHandler - on_file_sent: " + file)
         pass
 
     def on_file_received(self, file):
@@ -66,6 +69,7 @@ Mostly just event handlers
         "file" is the absolute name of the file just being received.
         """
         global bucket_app
+        logger.info("BucketFtpHandler - on_file_received: " + file)
         bucket_app.on_nonactivity()
         bucket_app.on_file_received(path_cvt_fsyspath_thatexists(file))
         pass
@@ -76,6 +80,7 @@ Mostly just event handlers
         "file" is the absolute name of that file.
         """
         global bucket_app
+        logger.info("BucketFtpHandler - on_incomplete_file_sent: " + file)
         pass
 
     def on_incomplete_file_received(self, file):
@@ -84,7 +89,9 @@ Mostly just event handlers
         "file" is the absolute name of that file.
         """
         global bucket_app
+        logger.info("BucketFtpHandler - on_incomplete_file_received: " + file)
         bucket_app.on_nonactivity()
+        bucket_app.on_missed_file()
         paths = path_cvt_fsyspaths(file)
         for p in paths:
             try:
@@ -92,7 +99,6 @@ Mostly just event handlers
                     os.remove(p)
             except:
                 pass
-        pass
 
 class BucketFtpFilesystem(AbstractedFS):
 
@@ -108,28 +114,32 @@ class BucketFtpFilesystem(AbstractedFS):
         return x
 
     def fs2ftp(self, fspath):
+        global bucket_app
         assert isinstance(fspath, unicode), fspath
         fspath = path_cvt_virtualpath(fspath)
-        bucketroot = bucket_app.get_root()
+        bucket_root = bucket_app.get_root()
         if bucket_root is None:
-            bucketroot = "/tmp" # uhhhh no place to put the file, the file write will fail if disk space is not available
+            bucket_root = "/tmp" # uhhhh no place to put the file, the file write will fail if disk space is not available
         if os.path.isabs(fspath):
             p = os.path.normpath(fspath)
         else:
-            p = os.path.normpath(os.path.join(bucketroot, fspath))
+            p = os.path.normpath(os.path.join(bucket_root, fspath))
         if not self.validpath(p):
             return u('/')
         p = p.replace(os.sep, "/")
-        p = p[len(bucketroot):]
+        p = p[len(bucket_root):]
         if not p.startswith('/'):
             p = '/' + p
         return p
 
     def open(self, filename, mode):
+        global bucket_app
         assert isinstance(filename, unicode), filename
-        if bucket_app.still_has_space() == False:
+        if "w" in mode and bucket_app.still_has_space() == False:
             raise FilesystemError("Out of disk space")
         filename = path_cvt_fsyspath(filename)
+        if "w" in mode:
+            bucket_app.on_before_open(filename)
         head, tail = os.path.split(filename)
         os.makedirs(head, exist_ok=True)
         return open(filename, mode)
@@ -198,10 +208,9 @@ class BucketFtpFilesystem(AbstractedFS):
         return os.path.lexists(path_cvt_fsyspath(path))
 
 class BucketDtpHandler(ThrottledDTPHandler):
-
-"""
-Using the ThrottledDTPHandler skeleton so we can get a signal for every packet transferred
-"""
+    """
+    Using the ThrottledDTPHandler skeleton so we can get a signal for every packet transferred
+    """
 
     def use_sendfile(self):
         return False
@@ -224,7 +233,13 @@ def path_is_image_file(path):
 
     # check for the file name prefix, on Sony cameras, default is "DSC"
     prf = bucket_app.cfg_get_prefix().lower()
-    if x.startswith(prf) == False:
+    #if x.startswith(prf) == False:
+    #    return False, "", "", "", ""
+    # I disabled the exact match check for the header
+    # the current requirement is that the first few characters must be alphabet
+    # this allows for multiple cameras to connect to the same server, if they are configured with different headers
+    xh = x[0:len(prf)]
+    if xh.isalpha() == False:
         return False, "", "", "", ""
 
     # check if it's an image file by examining its file name extension
@@ -248,6 +263,14 @@ def path_is_image_file(path):
         return True, y, y[0:6], y[-5:], usedext
     else:
         return True, y, "", y, usedext
+
+def ext_is_raw(fileext):
+    global bucket_app
+    rawexts = bucket_app.cfg_get_extensions(key="raw_extensions", defval=["arw"]) # if raw file is not enabled on camera, then the cfg file should change this to jpg
+    for re in rawexts:
+        if re.lower() == fileext.lower():
+            return True
+    return False
 
 # return the name of a file without the date code, even if it has a date code
 def path_cvt_virtualname(path):
@@ -358,6 +381,11 @@ def start_ftp_server(app = None):
     return server
 
 def main():
+    app = bucketapp.BucketApp(hwio = bucketio.BucketIO_Simulator())
+    app.ux_frame()
+    #start_ftp_server(app)
+    while True:
+        app.ux_frame()
     return 0
 
 if __name__ == "__main__":
