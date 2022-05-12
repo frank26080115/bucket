@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
 
-import os, sys, time, datetime, shutil, subprocess, signal, random, math
+import os, sys, time, datetime, shutil, subprocess, signal, random, math, glob
 import threading, queue, socket
 import psutil
 
 from PIL import Image, ImageDraw, ImageFont, ExifTags
 from pyftpdlib.log import logger, config_logging, debug
 
-import bucketio
+import bucketio, bucketmenu, bucketftp
 
 bucket_app = None
 
 CONFIG_FILE_NAME    = "bucket_cfg.json"
-LAST_TIME_FILE_NAME = "lasttime.txt"
 LOW_SPACE_THRESH_MB = 200
 LOW_BATT_THRESH     = 10
 
 ALARMFLAG_DISKFULL   = 1
 ALARMFLAG_LOSTFILE = 2
 ALARMFLAG_BATTLOW    = 4
+
+CLONING_OFF        = 0
+CLONING_MAIN2REDUN = 1
+CLONING_BOTH       = 2
+CLONING_REDUN2MAIN = 3
 
 UX_LINESPACE = 0
 
@@ -35,7 +39,7 @@ class BucketApp:
         self.hwio = hwio
         self.has_rtc = bucketio.has_rtc()
         self.has_date = None
-        self.cloning_enaged = False
+        self.cloning_enaged = CLONING_OFF
         self.last_file = None
         self.last_file_date = None
         self.start_monotonic_time = time.monotonic()
@@ -50,12 +54,11 @@ class BucketApp:
         self.last_frame_time = 0
         self.ux_frame_cnt    = 0
         self.ux_screen       = UXSCREEN_MAIN
+        self.ux_menu         = bucketmenu.BucketMenu(self)
 
-        self.copy_queue = queue.Queue()
-        self.copy_filesize   = 0
-        self.copy_fileremain = 0
-        self.copy_thread = threading.Thread(target=self.copy_worker, daemon=True)
-        self.copy_thread.start()
+        self.reset_copy_thread()
+        self.copy_last_act = None
+        self.ftp_thread = None
 
     def reset_stats(self):
         self.session_first_number = None
@@ -68,8 +71,16 @@ class BucketApp:
         self.fsize_list           = [0] * 6
         self.fsize_avg            = 80 # start with a worse case estimate
 
+    def reset_copy_thread(self):
+        self.copy_queue = queue.Queue()
+        self.copy_filesize   = 0
+        self.copy_fileremain = 0
+        self.copy_thread = threading.Thread(target=self.copy_worker, daemon=True)
+        self.copy_thread.start()
+
     def reset_alarm(self):
         self.alarm_reason = 0
+        self.hwio.buzzer_off()
 
     def update_disk_list(self):
         partitions = get_mounted_disks()
@@ -154,20 +165,6 @@ class BucketApp:
         if len(disks) <= 0:
             return
 
-        if self.has_rtc == False:
-            # we have no RTC so look for a last-time file on the any of the disks
-            for d in disks:
-                tstr = ""
-                try:
-                    path = os.path.join(d, LAST_TIME_FILE_NAME)
-                    if os.path.isfile(path):
-                        with open(path, "r") as timefile:
-                            tstr = timefile.readline()
-                            self.last_file_date = datetime.datetime.strptime(tstr, "%Y:%m:%d %H:%M:%S")
-                        break
-                except Exception as ex:
-                    logger.error("Failed to load last-time file at \"" + path + "\", exception: " + str(ex))
-
         # look on all disks for the config file
         for d in disks:
             path = os.path.join(d, CONFIG_FILE_NAME)
@@ -178,6 +175,19 @@ class BucketApp:
                     return
                 except Exception as ex:
                     logger.error("Failed to load JSON cfg file at \"" + path + "\", exception: " + str(ex))
+
+        if self.has_rtc == False:
+            # we have no RTC so look for a directory with the latest date code
+            for d in disks:
+                bucket_name = self.cfg_get_bucketname()
+                bucket_dir = os.path.join(d, bucket_name)
+                g = glob.glob(os.path.join(bucket_dir, "*") + os.path.sep, recursive = True)
+                g.sort(reverse=True) # make sure the latest is on top
+                for dir in g:
+                    if os.path.isdir(dir) and "-" in dir:
+                        hdr = dir[0:dir.index('-')]
+                        if hdr.isnumeric() and len(hdr) == 6:
+                            self.last_file_date = datetime.datetime.strptime("20" + hdr, "%Y%m%d")
 
     def cfg_get_genericstring(self, key, defval):
         result = defval
@@ -269,14 +279,17 @@ class BucketApp:
         return self.cfg_get_genericstring("ftp_username", "user")
 
     def cfg_get_ftppassword(self):
-        return self.cfg_get_genericstring("ftp_password", "123")
+        return self.cfg_get_genericstring("ftp_password", "12345")
 
     def cfg_get_ftpport(self):
-        return self.cfg_get_genericint("ftp_port", 2121)
+        return self.cfg_get_genericint("ftp_port", 2133)
 
-    def on_before_open(self, filename):
-        isimg, filename, filedatecode, filenumber, fileext = bucketftp.path_is_image_file(path)
-        israw = bucketftp.ext_is_raw(fileext)
+    def cfg_get_bucketname(self):
+        return self.cfg_get_genericstring("bucket_name", "photos")
+
+    def on_before_open(self, filepath):
+        isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(filepath)
+        israw = ext_is_raw(fileext)
         if isimg and israw:
             fnum = int(filenumber)
             if self.session_first_number is None:
@@ -285,19 +298,8 @@ class BucketApp:
     def on_file_received(self, file):
         self.last_file = file
 
-        # if we have no RTC but we do have a date from the camera, then we write it to a file on the USB drive
-        # this way, we can reboot the Pi and still have a sort-of-valid date without the camera
-        if self.has_rtc == False and self.has_date is not None:
-            try:
-                mntpt = find_mount_point(file)
-                timefilename = os.path.join(mntpt, LAST_TIME_FILE_NAME)
-                with open(timefilename, "w") as timefile:
-                    timefile.write(self.has_date.strftime("%Y:%m:%d %H:%M:%S"))
-            except Exception as ex:
-                logger.error("Error writing last-time file, exception: " + str(ex))
-
-        isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(path)
-        israw = bucketftp.ext_is_raw(fileext) # ideally we only count statistics for raw files, otherwise this code can lose a raw file and not notify the user when the corresponding jpg file exists
+        isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(file)
+        israw = ext_is_raw(fileext) # ideally we only count statistics for raw files, otherwise this code can lose a raw file and not notify the user when the corresponding jpg file exists
         fnum = int(filenumber)
 
         # use consecutive identical numbers as an indicator that the camera is in raw+jpg mode
@@ -309,12 +311,12 @@ class BucketApp:
 
         if isimg:
             # use a running average list of the previous multiple file sizes
-            fsize = ceil(os.path.getsize(file) / 1024 / 1024)
+            fsize = math.ceil(os.path.getsize(file) / 1024 / 1024)
             if fsize > 0:
                 self.fsize_list[self.fsize_idx] = fsize
                 self.fsize_idx = (self.fsize_idx + 1) % len(self.fsize_list)
                 if 0 not in self.fsize_list:
-                    self.fsize_avg = ceil(sum(self.fsize_list) / len(self.fsize_list))
+                    self.fsize_avg = math.ceil(sum(self.fsize_list) / len(self.fsize_list))
                     if self.both_file_types > 4:
                         self.fsize_avg *= 2
 
@@ -346,6 +348,15 @@ class BucketApp:
                 while fnum in self.session_lost_list:
                     self.session_lost_list.remove(fnum)
 
+        # the way the FTP code works is that when this callback is called, the file has not been renamed yet
+        if isimg:
+            npath = rename_camera_file_path(file, self.cfg_get_bucketname(), self.disks[0])
+            shutil.move(file, npath)
+            # keep a record of the move so the FTP can still find it
+            with open(file + ".washere", "w") as whf:
+                whf.write(npath)
+            self.last_file = npath
+
         self.update_disk_list()
         if len(self.disks) <= 1:
             return # no other disk to copy to, give up
@@ -356,11 +367,20 @@ class BucketApp:
                     continue # don't copy to the same disk as the origin
                 if file.startswith(origdisk):
                     # enqueue the task
-                    self.copy_queue.put(file + ";" + os.path.join(destdisk, file[len(origdisk) + 1:]))
+                    self.copy_queue.put(npath + ";" + os.path.join(destdisk, npath[len(origdisk):]))
+
+    def on_missed_file(self, file):
+        isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(file)
+        if isimg and filenumber.isnumeric():
+            fnum = int(filenumber)
+            if fnum not in self.session_lost_list:
+                self.session_lost_list.append(lnum)
+            self.session_lost_cnt += 1
+            self.on_lost_file()
 
     def clone_another(self):
         # a few checks to see if the system is busy, prioritize FTP transfers
-        if self.cloning_enaged == False or len(self.disks) <= 1 or self.copy_queue.empty() == False:
+        if self.cloning_enaged == CLONING_OFF or len(self.disks) <= 1 or self.copy_queue.empty() == False:
             return
         tnow = time.monotonic()
         if self.session_last_act is not None:
@@ -373,6 +393,8 @@ class BucketApp:
         self.update_disk_list()
 
         for origdisk in self.disks:
+            if self.cloning_enaged == CLONING_REDUN2MAIN and origdisk == self.disks[0]:
+                continue
             filelist = glob.glob(origdisk + os.path.sep + "**" + os.path.sep + "*", recursive=True)
             random.shuffle(filelist)
             for origfile in filelist:
@@ -380,17 +402,24 @@ class BucketApp:
                 for destdisk in self.disks:
                     if origdisk == destdisk:
                         continue # don't copy to the same disk as the origin
-                    destfile = os.path.join(destdisk, filetail)
+                    if is_camera_file(origfile):
+                        destfile = rename_camera_file_path(origfile, self.cfg_get_bucketname(), destdisk)
+                    else:
+                        destfile = os.path.join(destdisk, filetail)
                     if os.path.isfile(destfile) == False:
                         self.copy_queue.put(origfile + ";" + destfile) # enqueue the task
                         return # only do one
+            if self.cloning_enaged == CLONING_MAIN2REDUN:
+                break
         time.sleep(2) # nothing to do!
 
     def on_disk_full(self):
         self.alarm_reason |= ALARMFLAG_DISKFULL
+        self.hwio.buzzer_on()
 
     def on_lost_file(self):
         self.alarm_reason |= ALARMFLAG_LOSTFILE
+        self.hwio.buzzer_on()
 
     def copy_worker(self):
         try:
@@ -401,8 +430,10 @@ class BucketApp:
                     if self.has_rtc == False:
                         if self.last_file is not None and self.has_date is None:
                             flower = self.last_file.lower()
-                            if flower.endswith(".jpg") or flower.endswith(".jpeg"):
+                            if flower.endswith(".jpg") or flower.endswith(".jpeg") or flower.endswith(".arw"):
                                 self.has_date = get_img_exif_date(self.last_file)
+                                if self.has_date is None: # prevent infinite loop from error
+                                    self.last_file = None
                                 continue
 
                     # sleep if there's nothing to do
@@ -416,20 +447,25 @@ class BucketApp:
 
                     itm = self.copy_queue.get()
                     itms = itm.split(';')
+                    total, free = get_disk_stats(itms[1])
                     if os.path.isfile(itms[0]) == False:
+                        logger.error("copy thread missing source file: " + itms[0])
                         continue # file is missing, weird, can't do anything so give up
-                    sz = os.path.getsize(itms[0])
-                    if free < sz + LOW_SPACE_THRESH_MB:
+                    sz = math.ceil(os.path.getsize(itms[0]) / 1024 / 1024)
+                    if free < (sz + LOW_SPACE_THRESH_MB):
+                        logger.error("copy thread destination \"%s\" out of space, need %d MB, free %d MB" % (itms[1], sz, free))
                         continue # no space for copying
                     self.copy_filesize   = sz
                     self.copy_fileremain = sz
-                    total, free = get_disk_stats(itms[1])
+                    logger.info("cloning \"%s\" -> \"%s\"" % (itms[0], itms[1]))
+                    self.copy_last_act = time.monotonic()
                     with open(itms[0], "rb") as fin:
                         os.makedirs(os.path.dirname(itms[1]), exist_ok=True)
                         with open(itms[1], "wb") as fout:
                             # copy from input to output in chunks, so the GUI may show updates
                             while self.copy_fileremain > 0:
-                                rlen = min(1024 * 10, self.copy_fileremain)
+                                self.copy_last_act = time.monotonic()
+                                rlen = min(1024 * 100, self.copy_fileremain)
                                 bytes = fin.read(rlen)
                                 if not bytes or len(bytes) <= 0:
                                     self.copy_fileremain = 0
@@ -444,11 +480,14 @@ class BucketApp:
                     self.copy_fileremain = 0
                 except Exception as ex2:
                     logger.error("Copy thread inner exception: " + str(ex2))
+                    if os.name == "nt":
+                        raise ex2
                     time.sleep(0.1)
         except Exception as ex1:
             logger.error("Copy thread outer exception: " + str(ex1))
             self.copy_thread = None
-            pass
+            if os.name == "nt":
+                raise ex1
 
     def ux_frame(self):
         tnow = time.monotonic()
@@ -458,6 +497,13 @@ class BucketApp:
             return
         self.last_frame_time = tnow
         self.ux_frame_cnt += 1
+
+        if self.server is not None and self.ftp_thread is None:
+            logger.info("starting FTP thread")
+            self.ftp_start()
+        if self.copy_thread is None:
+            logger.info("restarting copying worker thread")
+            self.reset_copy_thread()
 
         pad = 1 if self.hwio.is_sim else 0
         y = 0
@@ -540,6 +586,7 @@ class BucketApp:
         if higher_batt < self.batt_lowest:
             if self.batt_lowest >= LOW_BATT_THRESH and higher_batt < LOW_BATT_THRESH:
                 self.alarm_reason |= ALARMFLAG_BATTLOW
+                self.hwio.buzzer_on()
             self.batt_lowest = higher_batt
         str = "BATT: "
         if use_volts:
@@ -574,6 +621,10 @@ class BucketApp:
             self.ux_show_timesliced_texts(y, pad, hdr, txtlist, 4)
 
     def ux_show_wifi(self, y, pad):
+        if self.server is None or self.ftp_thread is None:
+            self.hwio.imagedraw.text((pad, pad+y), "FTP IS OFF", font=self.font, fill=255)
+            return
+
         hdr = "WIFI: "
         txtlist = []
 
@@ -632,10 +683,12 @@ class BucketApp:
             str = "LOST: %d" % (self.session_lost_cnt)
         if (time.monotonic() - self.session_last_act) < 2:
             if self.font_has_lower:
+                # animated busy indication by making the letters dance
                 r = random.randint(0, 3)
                 c = str[r]
-                str = str[0:r] + c.tolower() + str[r + 1:]
+                str = str[0:r] + c.lower() + str[r + 1:]
             else:
+                # animated busy symbol
                 tmod = self.ux_frame_cnt % (2 * 5)
                 if tmod < (2 * 1):
                     str = ">" + str
@@ -672,7 +725,7 @@ class BucketApp:
             str1 = "DISK" + idc
             str2 = "FREE@@" + idc
             total, free = get_disk_stats(disk)
-            is_copying = disk_idx > 0 and self.copy_filesize > 0 and self.copy_fileremain > 0 # indicate cloning is active
+            is_copying = disk_idx > 0 and ((self.copy_filesize > 0 and self.copy_fileremain > 0) or (self.copy_last_act is not None and (time.monotonic() - self.copy_last_act) < 3)) # indicate cloning is active
             (font_width, font_height) = self.font.getsize(str1 + (">" if is_copying else "") + disk)
             if font_width > (bucketio.OLED_WIDTH - (pad * 2)):
                 # shorten the disk name to fit screen
@@ -706,7 +759,7 @@ class BucketApp:
                             str2 = "REM:"
                     (font_width, font_height) = self.font.getsize(str1 + str3)
                     if font_width > (bucketio.OLED_WIDTH - (pad * 2)):
-                        str3 = (">" if is_copying else "") + "999999999999" # in the end, we eventually stop being able to show big numbers, so we make the number look big with 9s
+                        str3 = (">" if is_copying else "") + "99999999999999999" # in the end, we eventually stop being able to show big numbers, so we make the number look big with 9s
                         (font_width, font_height) = self.font.getsize(str1 + str3)
                         while font_width > (bucketio.OLED_WIDTH - (pad * 2)):
                             str3 = str3[0:-1]
@@ -724,11 +777,23 @@ class BucketApp:
             str += " ..."
         self.hwio.imagedraw.text((pad, pad+y), str.rstrip(), font=self.font, fill=255)
 
+    def ftp_start(self):
+        if self.server is None:
+            return
+        self.ftp_thread = threading.Thread(target=self.ftp_worker, daemon=True)
+        self.ftp_thread.start()
+
+    def ftp_worker(self):
+        try:
+            self.server.serve_forever()
+        except Exception as ex1:
+            logger.error("FTP thread exception: " + str(ex1))
+            self.ftp_thread = None
+            if os.name == "nt":
+                raise ex1
+
 def get_img_exif_date(file):
     if file is None:
-        return None
-    flower = file.lower()
-    if flower.endswith(".jpg") == False and flower.endswith(".jpeg") == False:
         return None
     tval = ""
     try:
@@ -744,6 +809,21 @@ def get_img_exif_date(file):
         if len(tval) > 0:
             estr += " tag val: \"" + tval + "\", "
         logger.error(estr + "exception: " + str(ex))
+
+    # fall-back to method that uses the folder name for date
+    try:
+        head, tail = os.path.split(file)
+        head, dir = os.path.split(head)
+        if len(dir) >= 4:
+            dirdatestr = dir[-5:]
+            if dirdatestr.isnumeric():
+                dirdatestr = "202" + dirdatestr
+                return datetime.datetime.strptime(dirdatestr, "%Y%m%d")
+    except Exception as ex:
+        logger.error("Unable to extract date from dir name, exception: " + str(ex))
+        if os.name == "nt":
+            raise ex
+
     return None
 
 def get_mounted_disks():
@@ -764,13 +844,15 @@ def get_disk_stats(path):
     total = 0
     free = 0
     try:
-        statvfs = os.statvfs(path)
+        statvfs = os.statvfs(find_mount_point(path))
         free = statvfs.f_frsize * statvfs.f_bfree
         total = statvfs.f_frsize * statvfs.f_blocks
-    except:
+    except Exception as ex:
+        if os.name == "nt":
+            pass
         pass
     try:
-        total, used, free = shutil.disk_usage(path)
+        total, used, free = shutil.disk_usage(find_mount_point(path))
     except:
         pass
     return total / 1024 / 1024, free / 1024 / 1024 # return in megabytes
@@ -796,6 +878,78 @@ def find_mount_point(path):
     while not os.path.ismount(path):
         path = os.path.dirname(path)
     return path
+
+def path_is_image_file(path):
+    global bucket_app
+    x = os.path.basename(path).lower()
+
+    # check for the file name prefix, on Sony cameras, default is "DSC"
+    prf = bucket_app.cfg_get_prefix().lower()
+    #if x.startswith(prf) == False:
+    #    return False, "", "", "", ""
+    # I disabled the exact match check for the header
+    # the current requirement is that the first few characters must be alphabet
+    # this allows for multiple cameras to connect to the same server, if they are configured with different headers
+    xh = x[0:len(prf)]
+    if xh.isalpha() == False:
+        return False, "", "", "", ""
+
+    # check if it's an image file by examining its file name extension
+    extlist = bucket_app.cfg_get_extensions()
+    usedext = None
+    for ext in extlist:
+        if x.endswith("." + ext.lower()):
+            usedext = path[-len(ext):]
+            break
+    if usedext is None:
+        return False, "", "", "", ""
+
+    # extract the part of the name that's not the prefix and not the extension
+    y = x[len(prf):]
+    y = y[:-(1 + len(usedext))]
+
+    if y.isnumeric() == False: # this must be a number string to be considered a valid file from the camera
+        return False, "", "", "", ""
+
+    if len(y) >= 11: # the name is long enough to contain a date
+        return True, y, y[0:6], y[-5:], usedext
+    else:
+        return True, y, "", y, usedext
+
+def is_camera_file(path):
+    isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(path)
+    if isimg == False or len(filedatecode) > 0:
+        return False
+    pathparts = path.split(os.path.sep)
+    if pathparts[-3] == "DCIM" or pathparts[-2] == "DCIM":
+        return True
+
+def is_disk_camera(path):
+    dcim = os.path.join(path, "DCIM")
+    return os.path.isdir(dcim)
+
+def rename_camera_file(path):
+    global bucket_app
+    head, tail = os.path.split(path)
+    prf = bucket_app.cfg_get_prefix()
+    # build the new file name with the date code
+    s1 = tail[0:len(prf)]
+    s2 = bucket_app.get_date_str()
+    s3 = tail[len(prf):]
+    nfname = s1 + s2 + s3
+    # build the new dir name with the date code
+    head2, tail2 = os.path.split(head)
+    ndir = s2 + "-" + tail2
+    return ndir, nfname
+
+def rename_camera_file_path(path, bucketname, disk):
+    bucketname = bucketname
+    ndir, nfname = rename_camera_file(path)
+    npath = os.path.join(disk, bucketname)
+    npath = os.path.join(npath, ndir)
+    os.makedirs(npath, exist_ok=True)
+    npath = os.path.join(npath, nfname)
+    return npath
 
 def get_wifi_ip():
     #if os.name == 'nt':
@@ -826,14 +980,21 @@ def get_wifi_ssid():
         pass
     return ""
 
+def ext_is_raw(fileext):
+    global bucket_app
+    rawexts = bucket_app.cfg_get_extensions(key="raw_extensions", defval=["arw"]) # if raw file is not enabled on camera, then the cfg file should change this to jpg
+    for re in rawexts:
+        if re.lower() == fileext.lower():
+            return True
+    return False
+
 def main():
-    x = get_mounted_disks()
-    x.sort(reverse = True, key = disk_sort_func)
-    for i in x:
-        total, free = get_disk_stats(i)
-        print("%s : %d/%d" % (i, free, total))
-    x = get_img_exif_date("F:\\Pictures\\Photography2022\\220509-10020509\\DSC22050909550.JPG")
-    print(x)
+    config_logging()
+    hwio = bucketio.BucketIO_Simulator() if os.name == "nt" else bucketio.BucketIO()
+    app = BucketApp(hwio = hwio)
+    bucketftp.start_ftp_server(app)
+    while True:
+        app.ux_frame()
     return 0
 
 if __name__ == "__main__":

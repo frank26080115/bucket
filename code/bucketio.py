@@ -14,6 +14,8 @@ except:
 
 from PIL import Image, ImageDraw, ImageFont
 
+import queue
+
 PIN_OLED_RESET = 17
 PIN_OLED_CS    = 27
 PIN_BUZZER     = 13
@@ -45,6 +47,7 @@ class BucketIO:
         self.batt_raw  = [-1, -1]
         self.batt_volt = [-1, -1]
         self.batt_chg  = [-100, -100]
+        self.button_queue = queue.Queue()
 
     def hw_init(self):
         self.pin_oledreset = gpiozero.DigitalOutputDevice(PIN_OLED_RESET, initial_value=False)
@@ -133,6 +136,7 @@ class BucketIO:
 class BucketIO_Simulator:
     def __init__(self):
         self.is_sim = True
+        self.button_queue = queue.Queue()
         self.image = Image.new("1", (OLED_WIDTH + 2, OLED_HEIGHT + 2))
         self.imagedraw = ImageDraw.Draw(self.image)
         self.oled_blankimage()
@@ -143,16 +147,34 @@ class BucketIO_Simulator:
     def oled_show(self):
         npimg = numpy.array(self.image.convert('RGB'))
         cv2.imshow("img", npimg)
-        cv2.waitKey(1)
+        k = cv2.waitKey(1)
+        if k == ord('1'):
+            self.button_queue.put(1)
+        elif k == ord('2'):
+            self.button_queue.put(2)
+        elif k == ord('3'):
+            self.button_queue.put(3)
+        elif k == ord('4'):
+            self.button_queue.put(4)
+        elif k == ord('5'):
+            self.button_queue.put(5)
 
     def batt_read(self):
         return [2048, 2048], [8.4, 8.4], [100, 100]
 
     def pop_button(self):
-        return 0
+        if self.button_queue.empty():
+            return 0
+        return self.button_queue.get()
 
     def is_btn_held(self, num):
         return False
+
+    def buzzer_on(self):
+        pass
+
+    def buzzer_off(self):
+        pass
 
 def adc_to_voltage(x):
     if x < 0:

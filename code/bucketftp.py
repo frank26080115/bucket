@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
-import os, sys, time, datetime
+import os, sys, time, datetime, glob, fnmatch
 
 from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler, ThrottledDTPHandler, DTPHandler
 from pyftpdlib.servers import FTPServer, ThreadedFTPServer
 from pyftpdlib.filesystems import AbstractedFS, FilesystemError
 from pyftpdlib.log import logger, config_logging, debug
+from pyftpdlib._compat import unicode, u, PY3
 
 import bucketapp, bucketio
 
@@ -71,7 +72,7 @@ class BucketFtpHandler(FTPHandler):
         global bucket_app
         logger.info("BucketFtpHandler - on_file_received: " + file)
         bucket_app.on_nonactivity()
-        bucket_app.on_file_received(path_cvt_fsyspath_thatexists(file))
+        bucket_app.on_file_received(file)
         pass
 
     def on_incomplete_file_sent(self, file):
@@ -91,42 +92,47 @@ class BucketFtpHandler(FTPHandler):
         global bucket_app
         logger.info("BucketFtpHandler - on_incomplete_file_received: " + file)
         bucket_app.on_nonactivity()
-        bucket_app.on_missed_file()
-        paths = path_cvt_fsyspaths(file)
-        for p in paths:
-            try:
-                if os.path.isfile(p):
-                    os.remove(p)
-            except:
-                pass
+        bucket_app.on_missed_file(file)
+        try:
+            if os.path.isfile(file):
+                os.remove(file)
+            if os.path.isfile(file + ".washere"):
+                os.remove(file + ".washere")
+        except:
+            pass
 
 class BucketFtpFilesystem(AbstractedFS):
 
     def ftp2fs(self, ftppath):
         global bucket_app
-        x = AbstractedFS.ftp2fs(ftppath)
+        x = AbstractedFS.ftp2fs(self, ftppath)
         bucket_root = bucket_app.get_root()
         if bucket_root is None:
-            return "/tmp"
-        if x[0] != '/':
-            x = bucket_root + x
-        x = path_cvt_fsyspath(x)
+            if os.name != "nt":
+                return "/tmp"
+            else:
+                return "C:\\Sandbox"
+        if x[0] != '/' and x[1] != ':':
+            x = bucket_root.rstrip(os.path.sep) + os.path.sep + x
         return x
 
     def fs2ftp(self, fspath):
         global bucket_app
         assert isinstance(fspath, unicode), fspath
-        fspath = path_cvt_virtualpath(fspath)
         bucket_root = bucket_app.get_root()
         if bucket_root is None:
-            bucket_root = "/tmp" # uhhhh no place to put the file, the file write will fail if disk space is not available
+            # uhhhh no place to put the file, the file write will fail if disk space is not available
+            if os.name != "nt":
+                bucket_root = "/tmp"
+            else:
+                bucket_root = "C:\\Sandbox"
         if os.path.isabs(fspath):
             p = os.path.normpath(fspath)
         else:
             p = os.path.normpath(os.path.join(bucket_root, fspath))
         if not self.validpath(p):
             return u('/')
-        p = p.replace(os.sep, "/")
+        p = p.replace(os.path.sep, "/")
         p = p[len(bucket_root):]
         if not p.startswith('/'):
             p = '/' + p
@@ -137,7 +143,6 @@ class BucketFtpFilesystem(AbstractedFS):
         assert isinstance(filename, unicode), filename
         if "w" in mode and bucket_app.still_has_space() == False:
             raise FilesystemError("Out of disk space")
-        filename = path_cvt_fsyspath(filename)
         if "w" in mode:
             bucket_app.on_before_open(filename)
         head, tail = os.path.split(filename)
@@ -151,7 +156,9 @@ class BucketFtpFilesystem(AbstractedFS):
         # convert all the names from date-coded to non-date-coded before returning it to the FTP client
         while i < len(lst):
             if "." in lst:
-                lst[i] = path_cvt_virtualname(lst[i])
+                if lst[i].endswith(".washere"):
+                    s = lst[i]
+                    lst[i] = s[0:-8]
             i += 1
         return lst
 
@@ -159,53 +166,57 @@ class BucketFtpFilesystem(AbstractedFS):
         return self.listdir(path)
 
     def remove(self, path):
-        # do not delete any files
-        pass
+        if os.path.isfile(path + ".washere"):
+            os.remove(path + ".washere")
 
     def chmod(self, path, mode):
         assert isinstance(path, unicode), path
         if not hasattr(os, 'chmod'):
             raise NotImplementedError
-        os.chmod(path_cvt_fsyspath(path), mode)
+        if os.path.isfile(path + ".washere"):
+            return os.chmod(read_washere_file(path), mode)
+        return os.chmod(path, mode)
 
     def stat(self, path):
-        return os.stat(path_cvt_fsyspath(path))
+        return callfunc_for_washere(path, os.stat)
 
     def utime(self, path, timeval):
-        return os.utime(path_cvt_fsyspath(path), (timeval, timeval))
+        if os.path.isfile(path + ".washere"):
+            return os.utime(read_washere_file(path), (timeval, timeval))
+        return os.utime(path, (timeval, timeval))
 
     if hasattr(os, 'lstat'):
         def lstat(self, path):
             """Like stat but does not follow symbolic links."""
             # on python 2 we might also get bytes from os.lisdir()
             # assert isinstance(path, unicode), path
-            return os.lstat(path_cvt_fsyspath(path))
+            return callfunc_for_washere(path, os.lstat)
     else:
         lstat = stat
 
     def isfile(self, path):
         assert isinstance(path, unicode), path
-        return os.path.isfile(path_cvt_fsyspath(path))
+        return callfunc_for_washere(path, os.path.isfile)
 
     def isdir(self, path):
         assert isinstance(path, unicode), path
-        return os.path.isdir(path_cvt_fsyspath(path))
+        return os.path.isdir(path)
 
     def getsize(self, path):
         assert isinstance(path, unicode), path
-        return os.path.getsize(path_cvt_fsyspath(path))
+        return callfunc_for_washere(path, os.path.getsize)
 
     def getmtime(self, path):
         assert isinstance(path, unicode), path
-        return os.path.getmtime(path_cvt_fsyspath(path))
+        return callfunc_for_washere(path, os.path.getmtime)
 
     def realpath(self, path):
         assert isinstance(path, unicode), path
-        return os.path.realpath(path_cvt_fsyspath(path))
+        return callfunc_for_washere(path, os.path.realpath)
 
     def lexists(self, path):
         assert isinstance(path, unicode), path
-        return os.path.lexists(path_cvt_fsyspath(path))
+        return callfunc_for_washere(path, os.path.lexists)
 
 class BucketDtpHandler(ThrottledDTPHandler):
     """
@@ -227,165 +238,75 @@ class BucketDtpHandler(ThrottledDTPHandler):
         bucket_app.on_activity()
         return num_sent
 
-def path_is_image_file(path):
-    global bucket_app
-    x = os.path.basename(path).lower()
+class BucketAuthorizer(DummyAuthorizer):
+    def get_home_dir(self, username):
+        global bucket_app
+        if bucket_app is not None:
+            return bucket_app.get_root()
+        else:
+            return DummyAuthorizer.get_home_dir(self, username)
 
-    # check for the file name prefix, on Sony cameras, default is "DSC"
-    prf = bucket_app.cfg_get_prefix().lower()
-    #if x.startswith(prf) == False:
-    #    return False, "", "", "", ""
-    # I disabled the exact match check for the header
-    # the current requirement is that the first few characters must be alphabet
-    # this allows for multiple cameras to connect to the same server, if they are configured with different headers
-    xh = x[0:len(prf)]
-    if xh.isalpha() == False:
-        return False, "", "", "", ""
+def follow_washere(path):
+    if os.path.isfile(path + ".washere"):
+        npath = read_washere_file(path)
+        if os.path.isfile(npath):
+            return npath
+        # if the file wasn't found, maybe the disk moved to another mount point?
+        disks = bucketapp.get_mounted_disks()
+        for disk in disks:
+            maindir, fname = os.path.split(npath)
+            dir3, dir2 = os.path.split(maindir)
+            g = glob.glob(os.path.join(disk, "**") + os.path.sep + dir2 + os.path.sep + fname, recursive=True)
+            if len(g) > 0:
+                return g[0]
+        return npath
+    return path
 
-    # check if it's an image file by examining its file name extension
-    extlist = bucket_app.cfg_get_extensions().lower()
-    usedext = None
-    for ext in extlist:
-        if x.endswith("." + ext.lower()):
-            usedext = path[-len(ext):]
-            break
-    if usedext is None:
-        return False, "", "", ""
+def callfunc_for_washere(path, func):
+    return func(follow_washere(path))
 
-    # extract the part of the name that's not the prefix and not the extension
-    y = x[len(prf):]
-    y = y[:-(1 + len(usedext))]
-
-    if y.isnumeric() == False: # this must be a number string to be considered a valid file from the camera
-        return False, "", "", "", ""
-
-    if len(y) >= 11: # the name is long enough to contain a date
-        return True, y, y[0:6], y[-5:], usedext
-    else:
-        return True, y, "", y, usedext
-
-def ext_is_raw(fileext):
-    global bucket_app
-    rawexts = bucket_app.cfg_get_extensions(key="raw_extensions", defval=["arw"]) # if raw file is not enabled on camera, then the cfg file should change this to jpg
-    for re in rawexts:
-        if re.lower() == fileext.lower():
-            return True
-    return False
-
-# return the name of a file without the date code, even if it has a date code
-def path_cvt_virtualname(path):
-    global bucket_app
-    isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(path)
-    head, tail = os.path.split(path)
-    if isimg:
-        prf = bucket_app.cfg_get_prefix()
-        s1 = tail[0:len(prf)]
-        s2 = filenumber
-        s3 = "." + fileext
-        t2 = s1 + s2 + s3
-        return t2
-    else:
-        return tail
-
-# return the path of a file without the date code, even if it has a date code
-# warning: does not care where the root dir is
-def path_cvt_virtualpath(path):
-    global bucket_app
-    isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(path)
-    if isimg:
-        head, tail = os.path.split(path)
-        return os.path.join(head, path_cvt_virtualname(path))
-    else:
-        return path
-
-# return the name of a file with the date code
-def path_cvt_fsysname(path):
-    global bucket_app
-    isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(path)
-    head, tail = os.path.split(path)
-    if isimg and len(filedatecode) <= 0:
-        prf = bucket_app.cfg_get_prefix()
-        s1 = tail[0:len(prf)]
-        s2 = bucket_app.get_date_str()
-        s3 = tail[len(prf):]
-        t2 = s1 + s2 + s3
-        return t2
-    else:
-        return tail
-
-# return the path of a file with the date code
-# warning: does not care where the root dir is, assumed that ftp2fs added it
-def path_cvt_fsyspath(path):
-    global bucket_app
-    isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(path)
-    if isimg and len(filedatecode) <= 0:
-        head, tail = os.path.split(path)
-        return os.path.join(head, path_cvt_fsysname(path))
-    else:
-        return path
-
-# returns a list of potential paths of a file, one version with the date code, and another without the date code
-# warning: does not handle mount points
-def path_cvt_fsyspaths(path):
-    global bucket_app
-    paths = []
-    isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(path)
-    if isimg and len(filedatecode) <= 0:
-        head, tail = os.path.split(path)
-        npath = os.path.join(head, path_cvt_fsysname(path))
-        if npath not in paths:
-            paths.append(npath)
-    if isimg and len(filedatecode) > 0:
-        head, tail = os.path.split(path)
-        npath = os.path.join(head, path_cvt_virtualname(path))
-        if npath not in paths:
-            paths.append(npath)
-    if path not in paths:
-        paths.append(path)
-    return paths
-
-# goes through the results from path_cvt_fsyspaths and picks the first one that actually exists
-def path_cvt_fsyspath_thatexists(path):
-    if os.path.isfile(path):
-        return path
-    paths = path_cvt_fsyspaths(path)
-    for p in paths:
-        if os.path.isfile(p):
-            return p
-    return None
+def read_washere_file(path):
+    s = ""
+    with open(path + ".washere", "r") as f:
+        s = f.read().strip()
+    return s
 
 def start_ftp_server(app = None):
     global bucket_app
     if app is not None:
         bucket_app = app
 
-    authorizer = DummyAuthorizer()
-    if bucket_app is None:
-        authorizer.add_user('user', '12345', os.getcwd(), perm='elradfmwMT')
-    else:
-        authorizer.add_user(bucket_app.cfg_get_ftpusername(), bucket_app.cfg_get_ftppassword(), os.getcwd(), perm='elradfmwMT')
+    authorizer = BucketAuthorizer()
+    username = "user"
+    password = "12345"
+    if bucket_app is not None:
+        username = bucket_app.cfg_get_ftpusername()
+        password = bucket_app.cfg_get_ftppassword()
+    authorizer.add_user(username, password, os.getcwd(), perm='elradfmwMT')
+    #authorizer.add_anonymous(os.getcwd())
+
+    print("FTP username \"%s\" password \"%s\"" % (username, password))
 
     ftp_handler               = BucketFtpHandler
     ftp_handler.authorizer    = authorizer
     ftp_handler.dtp_handler   = BucketDtpHandler
     ftp_handler.abstracted_fs = BucketFtpFilesystem
 
-    port = 2121
+    port = 2133
     if bucket_app is not None:
         port = bucket_app.cfg_get_ftpport()
 
-    server = ThreadedFTPServer(('', port), ftp_handler)
+    print("FTP port %d" % port)
+
+    server = ThreadedFTPServer(('192.168.1.79', port), ftp_handler)
     if bucket_app is not None:
         bucket_app.server = server
-    server.serve_forever()
-    return server
+        bucket_app.ftp_start()
+    else:
+        server.serve_forever()
 
 def main():
-    app = bucketapp.BucketApp(hwio = bucketio.BucketIO_Simulator())
-    app.ux_frame()
-    #start_ftp_server(app)
-    while True:
-        app.ux_frame()
+    start_ftp_server()
     return 0
 
 if __name__ == "__main__":
