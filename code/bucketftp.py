@@ -300,7 +300,7 @@ def start_ftp_server(app = None):
 
     server = ThreadedFTPServer(('192.168.1.79', port), ftp_handler)
     if bucket_app is not None:
-        bucket_app.server = server
+        bucket_app.ftp_server = server
         bucket_app.ftp_start()
     else:
         server.serve_forever()

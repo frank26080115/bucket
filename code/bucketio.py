@@ -58,14 +58,30 @@ class BucketIO:
         self.button_3 = gpiozero.Button(PIN_BTN_3, pull_up = PIN_PULLUP_CONFIG, debounce_time = BUTTON_DEBOUNCE)
         self.button_4 = gpiozero.Button(PIN_BTN_4, pull_up = PIN_PULLUP_CONFIG, debounce_time = BUTTON_DEBOUNCE)
         self.button_5 = gpiozero.Button(PIN_BTN_5, pull_up = PIN_PULLUP_CONFIG, debounce_time = BUTTON_DEBOUNCE)
+        self.button_1.when_pressed = self.on_pressed_1
+        self.button_2.when_pressed = self.on_pressed_2
+        self.button_3.when_pressed = self.on_pressed_3
+        self.button_4.when_pressed = self.on_pressed_4
+        self.button_5.when_pressed = self.on_pressed_5
+        self.button_4.when_held    = self.on_pressed_4
+        self.button_5.when_held    = self.on_pressed_5
+        self.button_4.hold_time    = 0.5
+        self.button_5.hold_time    = 0.5
+        self.button_4.hold_repeat  = True
+        self.button_5.hold_repeat  = True
+        self.buttons = [self.button_1, self.button_2, self.button_3, self.button_4, self.button_5]
         self.i2c = busio.I2C(board.SCL, board.SDA)
-        self.disp = adafruit_ssd1306.SSD1306_I2C(OLED_WIDTH, OLED_HEIGHT, self.i2c, addr = I2CADDR_OLED)
+        self.pin_oledreset.on()
+        time.sleep(0.01)
+        self.disp = adafruit_ssd1306.SSD1306_I2C(OLED_WIDTH, OLED_HEIGHT, self.i2c, addr = I2CADDR_OLED, external_vcc = False)
         self.init_adc()
         time.sleep(0.01)
         self.init_oled()
         self.oled_blankimage()
 
     def init_oled(self):
+        self.pin_oledreset.off()
+        time.sleep(0.01)
         self.pin_oledreset.on()
         time.sleep(0.01)
         cmds = [
@@ -84,12 +100,9 @@ class BucketIO:
                 0xAF,             # Display on
             ]
         for c in cmds:
-            self.oled_txcmd(c)
+            self.disp.write_cmd(c)
         self.image = Image.new("1", (OLED_WIDTH, OLED_HEIGHT))
         self.imagedraw = ImageDraw.Draw(self.image)
-
-    def oled_txcmd(self, c):
-        self.i2c.writeto(I2CADDR_OLED, bytes([c]))
 
     def oled_blankimage(self):
         self.imagedraw.rectangle((0, 0, OLED_WIDTH, OLED_HEIGHT), outline=0, fill=0)
@@ -130,8 +143,24 @@ class BucketIO:
         self.buzzer_is_on = 0
         self.buzzer.off()
 
+    def on_pressed_1(self):
+        self.button_queue.enqueue(1)
+    def on_pressed_2(self):
+        self.button_queue.enqueue(2)
+    def on_pressed_3(self):
+        self.button_queue.enqueue(3)
+    def on_pressed_4(self):
+        self.button_queue.enqueue(4)
+    def on_pressed_5(self):
+        self.button_queue.enqueue(5)
+
     def pop_button(self):
-        return 0
+        if self.button_queue.empty():
+            return 0
+        return self.button_queue.get()
+
+    def is_btn_held(self, num):
+        return self.buttons[num].is_held
 
 class BucketIO_Simulator:
     def __init__(self):

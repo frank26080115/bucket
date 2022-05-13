@@ -54,6 +54,8 @@ class BucketMenu:
                     tail = "[M<->R]"
                 elif self.app.cloning_enaged == bucketapp.CLONING_REDUN2MAIN:
                     tail = "[R>M]"
+                elif self.app.cloning_enaged == bucketapp.CLONING_DONE:
+                    tail = "[DONE]"
                 items.append(["CLONE DISKS " + tail, MENUITEM_CLONE])
         if len(self.app.session_lost_list) > 0:
             items.append(["LOST FILES", MENUITEM_LOSTFILES])
@@ -151,21 +153,21 @@ class BucketMenu:
             if len(self.app.disks) > 1:
                 self.draw_bottom_texts(left="EJ-MAIN", right="-OTHER")
                 if btn_popped == 1:
-                    self.app.eject_disk(self.app.disks[0:0])
+                    bucketapp.disk_unmount_start(self.app.disks[0])
                     self.reset_state()
                     self.app.ux_screen = bucketapp.UXSCREEN_MAIN
                 elif btn_popped == 3:
-                    self.app.eject_disk(self.app.disks[1:])
+                    bucketapp.disks_unmount(self.app.disks[1:])
                     self.reset_state()
                     self.app.ux_screen = bucketapp.UXSCREEN_MAIN
             elif len(self.app.disks) == 1:
                 self.draw_bottom_texts(mid="EJECT")
                 if btn_popped == 2:
-                    self.app.eject_disk(self.app.disks[0:0])
+                    bucketapp.disk_unmount_start(self.app.disks[0])
                     self.reset_state()
                     self.app.ux_screen = bucketapp.UXSCREEN_MAIN
         elif self.selected_item == MENUITEM_CLONE:
-            if self.app.cloning_enaged == bucketapp.CLONING_OFF:
+            if self.app.cloning_enaged == bucketapp.CLONING_OFF or :
                 self.draw_bottom_texts(left="M>R", mid="M<->R", right="R>M")
                 if btn_popped == 1:
                     self.app.cloning_enaged = bucketapp.CLONING_MAIN2REDUN

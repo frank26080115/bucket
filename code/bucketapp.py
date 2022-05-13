@@ -7,7 +7,7 @@ import psutil
 from PIL import Image, ImageDraw, ImageFont, ExifTags
 from pyftpdlib.log import logger, config_logging, debug
 
-import bucketio, bucketmenu, bucketftp
+import bucketio, bucketmenu, bucketftp, bucketviewer
 
 bucket_app = None
 
@@ -23,6 +23,7 @@ CLONING_OFF        = 0
 CLONING_MAIN2REDUN = 1
 CLONING_BOTH       = 2
 CLONING_REDUN2MAIN = 3
+CLONING_DONE       = -1
 
 UX_LINESPACE = 0
 
@@ -35,7 +36,10 @@ class BucketApp:
         bucket_app = self
         self.disks = []
         self.cfg = None
-        self.server = None
+        self.ftp_server  = None
+        self.ftp_thread  = None
+        self.http_server = None
+        self.http_thread = None
         self.hwio = hwio
         self.has_rtc = bucketio.has_rtc()
         self.has_date = None
@@ -58,7 +62,7 @@ class BucketApp:
 
         self.reset_copy_thread()
         self.copy_last_act = None
-        self.ftp_thread = None
+        self.thumbnail_queue = Queue.queue()
 
     def reset_stats(self):
         self.session_first_number = None
@@ -295,6 +299,11 @@ class BucketApp:
             if self.session_first_number is None:
                 self.session_first_number = fnum
 
+        # we are busying copying a file, so stop the low priority thumbnail generation thread
+        thumb_later = bucketviewer.thumbgen_clear()
+        for tl in thumb_later:
+            self.thumbnail_queue.put(tl)
+
     def on_file_received(self, file):
         self.last_file = file
 
@@ -356,6 +365,7 @@ class BucketApp:
             with open(file + ".washere", "w") as whf:
                 whf.write(npath)
             self.last_file = npath
+            self.thumbnail_queue.put(npath)
 
         self.update_disk_list()
         if len(self.disks) <= 1:
@@ -411,6 +421,8 @@ class BucketApp:
                         return # only do one
             if self.cloning_enaged == CLONING_MAIN2REDUN:
                 break
+        if self.cloning_enaged == CLONING_REDUN2MAIN and self.copy_queue.empty():
+            self.cloning_enaged = CLONING_DONE
         time.sleep(2) # nothing to do!
 
     def on_disk_full(self):
@@ -443,7 +455,20 @@ class BucketApp:
                         time.sleep(2)
                         if self.cloning_enaged:
                             self.clone_another()
+                        if self.copy_queue.empty():
+                            if self.thumbnail_queue.empty() == False:
+                                try:
+                                    thumbme = self.thumbnail_queue.get()
+                                    #bucketviewer.generate_thumbnail(thumbme)
+                                    bucketviewer.enqueue_thumb_generation(thumbme, important=False)
+                                except Exception as ex3:
+                                    logger.error("Error generating thumbnail for \"" + thumbme + "\": " + str(ex23))
                         continue
+
+                    # we are busying copying a file, so stop the low priority thumbnail generation thread
+                    thumb_later = bucketviewer.thumbgen_clear()
+                    for tl in thumb_later:
+                        self.thumbnail_queue.put(tl)
 
                     itm = self.copy_queue.get()
                     itms = itm.split(';')
@@ -498,8 +523,11 @@ class BucketApp:
         self.last_frame_time = tnow
         self.ux_frame_cnt += 1
 
-        if self.server is not None and self.ftp_thread is None:
+        if self.ftp_server is not None and self.ftp_thread is None:
             logger.info("starting FTP thread")
+            self.ftp_start()
+        if self.http_server is not None and self.http_thread is None:
+            logger.info("starting HTTP thread")
             self.ftp_start()
         if self.copy_thread is None:
             logger.info("restarting copying worker thread")
@@ -621,7 +649,7 @@ class BucketApp:
             self.ux_show_timesliced_texts(y, pad, hdr, txtlist, 4)
 
     def ux_show_wifi(self, y, pad):
-        if self.server is None or self.ftp_thread is None:
+        if self.ftp_server is None or self.ftp_thread is None:
             self.hwio.imagedraw.text((pad, pad+y), "FTP IS OFF", font=self.font, fill=255)
             return
 
@@ -778,17 +806,32 @@ class BucketApp:
         self.hwio.imagedraw.text((pad, pad+y), str.rstrip(), font=self.font, fill=255)
 
     def ftp_start(self):
-        if self.server is None:
+        if self.ftp_server is None:
             return
         self.ftp_thread = threading.Thread(target=self.ftp_worker, daemon=True)
         self.ftp_thread.start()
 
     def ftp_worker(self):
         try:
-            self.server.serve_forever()
+            self.ftp_server.serve_forever()
         except Exception as ex1:
             logger.error("FTP thread exception: " + str(ex1))
             self.ftp_thread = None
+            if os.name == "nt":
+                raise ex1
+
+    def http_start(self):
+        if self.http_server is None:
+            return
+        self.http_thread = threading.Thread(target=self.http_worker, daemon=True)
+        self.http_thread.start()
+
+    def http_worker(self):
+        try:
+            self.http_server.serve_forever()
+        except Exception as ex1:
+            logger.error("HTTP thread exception: " + str(ex1))
+            self.http_thread = None
             if os.name == "nt":
                 raise ex1
 
@@ -866,12 +909,20 @@ def disk_sort_func(x):
         return free
 
 def disk_unmount(path):
-    os.system("umount " + path)
+    if os.name == 'nt':
+        return
+    os.system("umount " + find_mount_point(path))
 
 def disk_unmount_start(path):
-    command = "umount " + path
+    if os.name == 'nt':
+        return
+    command = "umount " + find_mount_point(path)
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return process
+
+def disks_unmount(disks):
+    for i in disks:
+        disk_unmount_start(i)
 
 def find_mount_point(path):
     path = os.path.abspath(path)
