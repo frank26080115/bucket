@@ -17,6 +17,9 @@ thumb_queue_highpriority = Queue.queue()
 thumb_queue_busy = False
 thumb_gen_thread = None
 
+keepcopy_queue = Queue.queue()
+keepcopy_thread = None
+
 class BucketHttpHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         global bucket_app
@@ -53,41 +56,48 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-type", "text/html")
                 self.end_headers()
-                if os.path.isfile(get_webfilepath("dirpage.htm")):
-                    with open(get_webfilepath("dirpage.htm"), "r") as f:
-                        self.wfile.write(bytes(f.read(), "utf-8"))
-                else:
-                    self.wfile.write(bytes("<html><head><title>Bucket " + dd + "</title></head><body>\r\n<h1>" + d + "</h1><br />", "utf-8"))
 
-                # find all of the files, including ones already marked for keeping or deleting
-                files = [ f.path for f in os.scandir(d) if f.is_file() ]
-                files_kept = [] if os.path.isdir(os.path.join(d, "keep"  )) else [ f.path for f in os.scandir(d) if f.is_file(os.path.join(d, "keep"  )) ]
-                files_del  = [] if os.path.isdir(os.path.join(d, "delete")) else [ f.path for f in os.scandir(d) if f.is_file(os.path.join(d, "delete")) ]
-                allfiles = files + files_kept + files_del
+                def writeout(str, hfile, wfile):
+                    hfile.write(str)
+                    wfile.write(bytes(str), "utf-8")
 
-                # sorting by name will keep them all in order
-                def sort_basename(n):
-                    return os.path.basename(n)
-                allfiles.sort(key=sort_basename)
+                with open(os.path.join(dir, dd) + ".htm", "w") as htmlfile:
 
-                if len(allfiles) <= 0:
-                    self.wfile.write(bytes("no files in " + dd + "<br />\r\n", "utf-8"))
-                else:
-                    self.wfile.write(bytes("<div id=\"file_list\" style=\"display: none;\">\r\n"), "utf-8"))
+                    if os.path.isfile(get_webfilepath("dirpage.htm")):
+                        with open(get_webfilepath("dirpage.htm"), "r") as f:
+                            writeout(f.read())
+                    else:
+                        writeout("<html><head><title>Bucket " + dd + "</title></head><body>\r\n<h1>" + d + "</h1><br />")
 
-                    # we'll need the thumbnails pretty soon
-                    for f in files:
-                        enqueue_thumb_generation(i, important=False)
+                    # find all of the files, including ones already marked for keeping or deleting
+                    files = [ f.path for f in os.scandir(d) if f.is_file() ]
+                    files_kept = [] if os.path.isdir(os.path.join(d, "keep"  )) else [ f.path for f in os.scandir(d) if f.is_file(os.path.join(d, "keep"  )) ]
+                    files_del  = [] if os.path.isdir(os.path.join(d, "delete")) else [ f.path for f in os.scandir(d) if f.is_file(os.path.join(d, "delete")) ]
+                    allfiles = files + files_kept + files_del
 
-                    # output a list of the files, the javascript can deal with it later
-                    for f in allfiles:
-                        ff = os.path.basename(f)
-                        fn, fe = os.path.splitext(ff)
-                        p = dd + "/" + ff
-                        if fe.lower() == ".jpg" or fe.lower() == ".arw":
-                            self.wfile.write(bytes("<a href=\"" + p + "\">" + p + "</a><br />\r\n"), "utf-8"))
-                    self.wfile.write(bytes("</div>"), "utf-8"))
-                self.wfile.write(bytes("</body></html>", "utf-8"))
+                    # sorting by name will keep them all in order
+                    def sort_basename(n):
+                        return os.path.basename(n)
+                    allfiles.sort(key=sort_basename)
+
+                    if len(allfiles) <= 0:
+                        writeout("no files in " + dd + "<br />\r\n")
+                    else:
+                        writeout("<div id=\"file_list\" style=\"display: none;\">\r\n")
+
+                        # we'll need the thumbnails pretty soon
+                        for f in files:
+                            enqueue_thumb_generation(i, important=False)
+
+                        # output a list of the files, the javascript can deal with it later
+                        for f in allfiles:
+                            ff = os.path.basename(f)
+                            fn, fe = os.path.splitext(ff)
+                            p = dd + "/" + ff
+                            if fe.lower() == ".jpg" or fe.lower() == ".arw":
+                                writeout("<a href=\"" + p + "\">" + p + "</a><br />\r\n")
+                        writeout("</div>")
+                    writeout("</body></html>")
                 return
 
         if self.path.startswith("/") and (self.path.endswith(".css") or self.path.endswith(".js")):
@@ -211,10 +221,50 @@ def keep_file(vpath, dirword = "keep"):
                     os.makedirs(os.path.dirname(kpath), exist_ok=True)
                     if os.path.isfile(fpath2) and os.path.isfile(kpath) == False:
                         os.rename(fpath2, kpath)
+                    elif os.path.isfile(fpath2) == False and os.path.isfile(kpath) == False and dirword == "keep":
+                        # there's no available file on the redundant disk to simply rename
+                        # so we will do a full copy instead, from one disk to another
+                        # this is slow so we do it in another thread
+                        enqueue_keepcopy(fpath2, kpath)
                 except Exception as ex2:
                     logger.error("Error in keep_file for another drive(\"" + disk + "\", \"" + vpath + "\"): " + str(ex2))
                     if os.name == "nt":
                         raise ex2
+
+def enqueue_keepcopy(src, dest):
+    keepcopy_queue.put(src + ";" + dest)
+    if keepcopy_thread is None:
+        keepcopy_thread = threading.Thread(target=keepcopy_worker, daemon=True)
+        keepcopy_thread.start()
+
+def keepcopy_worker():
+    try:
+        while True:
+            try:
+                if keepcopy_queue.empty() == False:
+                    x = keepcopy_queue.get()
+                    pts = x.split(';')
+                    if len(pts) != 2:
+                        continue
+                    src = pts[0].strip()
+                    dst = pts[1].strip()
+                    if os.path.isfile(src) == False:
+                        continue
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copyfile(src, dst)
+                else:
+                    time.sleep(1)
+                    break
+            except Exception as ex2:
+                logger.error("Keep-copy thread inner exception: " + str(ex2))
+                if os.name == "nt":
+                    raise ex2
+        keepcopy_thread = None
+    except Exception as ex1:
+        logger.error("Keep-copy thread outer exception: " + str(ex1))
+        keepcopy_thread = None
+        if os.name == "nt":
+            raise ex1
 
 def generate_thumbnail(filepath, skip_if_exists=True):
     thumbpath   = get_thumbname(filepath)
