@@ -192,7 +192,7 @@ class BucketCopier:
             self.file_totsize = 0
             self.file_remain = 0
         except Exception as ex2:
-            logger.error("Copy file, \"" + cmd + "\", exception: " + str(ex2))
+            logger.error("Copy file error, \"" + cmd + "\", exception: " + str(ex2))
             if os.name == "nt":
                 raise ex2
 

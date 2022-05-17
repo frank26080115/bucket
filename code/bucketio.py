@@ -50,6 +50,7 @@ class BucketIO:
         self.batt_volt = [-1, -1]
         self.batt_chg  = [-100, -100]
         self.button_queue = queue.Queue()
+        self.i2c = busio.I2C(board.SCL, board.SDA)
 
     def hw_init(self):
         self.pin_oledreset = gpiozero.DigitalOutputDevice(PIN_OLED_RESET, initial_value=False)
@@ -72,7 +73,6 @@ class BucketIO:
         self.button_4.hold_repeat  = True
         self.button_5.hold_repeat  = True
         self.buttons = [self.button_1, self.button_2, self.button_3, self.button_4, self.button_5]
-        self.i2c = busio.I2C(board.SCL, board.SDA)
         self.pin_oledreset.on()
         time.sleep(0.01)
         self.disp = adafruit_ssd1306.SSD1306_I2C(OLED_WIDTH, OLED_HEIGHT, self.i2c, addr = I2CADDR_OLED, external_vcc = False)
@@ -114,7 +114,7 @@ class BucketIO:
         self.disp.show()
 
     def init_adc(self):
-        self.i2c.writeto(I2CADDR_ADC, bytes([
+        return self.i2c.writeto(I2CADDR_ADC, bytes([
                   0x80 # setup
                 | 0x40 # internal reference, auto-shutdown reference, AIN3 is input
                        # the rest is 0, use internal clock, unipolar mode, reset config register
@@ -252,6 +252,15 @@ def has_rtc():
     if "no usable clock" in x or "cannot access the hardware clock" in x:
         return False
     return False
+
+def test_adc():
+    bhw = BucketIO()
+    x = bhw.init_adc()
+    print("Bucket IO initialized, status-code = %s" % (str(x))
+    while True:
+        raws, volts, percentages = bhw.batt_read()
+        print("%d, %5d, %.2f, %.1f, %5d, %.2f, %.1f" % (time.monotonic(), raws[0], volts[0], percentages[0], raws[1], volts[1], percentages[1]))
+        time.sleep(1)
 
 def main():
     bhw = BucketIO()
