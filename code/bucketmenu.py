@@ -5,11 +5,10 @@ import threading, queue, socket
 import psutil
 
 from PIL import Image, ImageDraw, ImageFont, ExifTags
-from pyftpdlib.log import logger, config_logging, debug
 
-import bucketapp, bucketio, bucketftp
+import bucketapp, bucketio, bucketftp, bucketlogger
 
-bucket_app = None
+logger = bucketlogger.logger
 
 MENUITEM_BACK         = 0
 MENUITEM_CLEARWARN    = 1

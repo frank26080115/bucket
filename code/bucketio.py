@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import sys, time, subprocess
+import sys, time, subprocess, queue
 
 is_embedded = True
 
@@ -14,7 +14,9 @@ except:
 
 from PIL import Image, ImageDraw, ImageFont
 
-import queue
+import bucketlogger
+
+logger = bucketlogger.logger
 
 PIN_OLED_RESET = 17
 PIN_OLED_CS    = 27

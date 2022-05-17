@@ -6,12 +6,12 @@ from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler, ThrottledDTPHandler, DTPHandler
 from pyftpdlib.servers import FTPServer, ThreadedFTPServer
 from pyftpdlib.filesystems import AbstractedFS, FilesystemError
-from pyftpdlib.log import logger, config_logging, debug
 from pyftpdlib._compat import unicode, u, PY3
 
-import bucketapp, bucketio
+import bucketapp, bucketio, bucketlogger
 
-bucket_app = None
+logger = bucketlogger.logger
+logger2 = logging.getLogger('pyftpdlib')
 
 class BucketFtpHandler(FTPHandler):
     """
@@ -22,77 +22,69 @@ class BucketFtpHandler(FTPHandler):
         """Called when client connects, *before* sending the initial
         220 reply.
         """
-        global bucket_app
-        logger.info("BucketFtpHandler - on_connect")
-        pass
+        logger2.info("BucketFtpHandler - on_connect")
 
     def on_disconnect(self):
         """Called when connection is closed."""
-        global bucket_app
-        logger.info("BucketFtpHandler - on_disconnect")
-        bucket_app.on_nonactivity()
-        pass
+        app = bucketapp.bucket_app
+        logger2.info("BucketFtpHandler - on_disconnect")
+        if app is None:
+            return
+        app.on_nonactivity()
 
     def on_login(self, username):
         """Called on user login."""
-        global bucket_app
-        logger.info("BucketFtpHandler - on_login: " + username)
-        pass
+        logger2.info("BucketFtpHandler - on_login: " + username)
 
     def on_login_failed(self, username, password):
         """Called on failed login attempt.
         At this point client might have already been disconnected if it
         failed too many times.
         """
-        global bucket_app
-        logger.info("BucketFtpHandler - on_login_failed: " + username)
-        pass
+        logger2.info("BucketFtpHandler - on_login_failed: " + username)
 
     def on_logout(self, username):
         """Called when user "cleanly" logs out due to QUIT or USER
         issued twice (re-login). This is not called if the connection
         is simply closed by client.
         """
-        global bucket_app
-        logger.info("BucketFtpHandler - on_logout: " + username)
-        pass
+        logger2.info("BucketFtpHandler - on_logout: " + username)
 
     def on_file_sent(self, file):
         """Called every time a file has been successfully sent.
         "file" is the absolute name of the file just being sent.
         """
-        global bucket_app
-        logger.info("BucketFtpHandler - on_file_sent: " + file)
-        pass
+        logger2.info("BucketFtpHandler - on_file_sent: " + file)
 
     def on_file_received(self, file):
         """Called every time a file has been successfully received.
         "file" is the absolute name of the file just being received.
         """
-        global bucket_app
-        logger.info("BucketFtpHandler - on_file_received: " + file)
-        bucket_app.on_nonactivity()
-        bucket_app.on_file_received(file)
-        pass
+        app = bucketapp.bucket_app
+        logger2.info("BucketFtpHandler - on_file_received: " + file)
+        if app is None:
+            return
+        app.on_nonactivity()
+        app.on_file_received(file)
 
     def on_incomplete_file_sent(self, file):
         """Called every time a file has not been entirely sent.
         (e.g. ABOR during transfer or client disconnected).
         "file" is the absolute name of that file.
         """
-        global bucket_app
-        logger.info("BucketFtpHandler - on_incomplete_file_sent: " + file)
-        pass
+        logger2.info("BucketFtpHandler - on_incomplete_file_sent: " + file)
 
     def on_incomplete_file_received(self, file):
         """Called every time a file has not been entirely received
         (e.g. ABOR during transfer or client disconnected).
         "file" is the absolute name of that file.
         """
-        global bucket_app
-        logger.info("BucketFtpHandler - on_incomplete_file_received: " + file)
-        bucket_app.on_nonactivity()
-        bucket_app.on_missed_file(file)
+        app = bucketapp.bucket_app
+        logger2.info("BucketFtpHandler - on_incomplete_file_received: " + file)
+        if app is None:
+            return
+        app.on_nonactivity()
+        app.on_missed_file(file)
         try:
             if os.path.isfile(file):
                 os.remove(file)
@@ -104,9 +96,11 @@ class BucketFtpHandler(FTPHandler):
 class BucketFtpFilesystem(AbstractedFS):
 
     def ftp2fs(self, ftppath):
-        global bucket_app
+        app = bucketapp.bucket_app
         x = AbstractedFS.ftp2fs(self, ftppath)
-        bucket_root = bucket_app.get_root()
+        bucket_root = None
+        if app is not None:
+            bucket_root = app.get_root()
         if bucket_root is None:
             if os.name != "nt":
                 return "/tmp"
@@ -117,8 +111,11 @@ class BucketFtpFilesystem(AbstractedFS):
         return x
 
     def fs2ftp(self, fspath):
-        global bucket_app
         assert isinstance(fspath, unicode), fspath
+        app = bucketapp.bucket_app
+        bucket_root = None
+        if app is not None:
+            bucket_root = app.get_root()
         bucket_root = bucket_app.get_root()
         if bucket_root is None:
             # uhhhh no place to put the file, the file write will fail if disk space is not available
@@ -139,14 +136,13 @@ class BucketFtpFilesystem(AbstractedFS):
         return p
 
     def open(self, filename, mode):
-        global bucket_app
         assert isinstance(filename, unicode), filename
-        if "w" in mode and bucket_app.still_has_space() == False:
+        app = bucketapp.bucket_app
+        if "w" in mode and (app is None or app.still_has_space() == False):
             raise FilesystemError("Out of disk space")
         if "w" in mode:
-            bucket_app.on_before_open(filename)
-        head, tail = os.path.split(filename)
-        os.makedirs(head, exist_ok=True)
+            app.on_before_open(filename)
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         return open(filename, mode)
 
     def listdir(self, path):
@@ -227,22 +223,24 @@ class BucketDtpHandler(ThrottledDTPHandler):
         return False
 
     def recv(self, buffer_size):
-        global bucket_app
+        app = bucketapp.bucket_app
         chunk = DTPHandler.recv(self, buffer_size)
-        bucket_app.on_activity()
+        if app is not None:
+            bucket_app.on_activity()
         return chunk
 
     def send(self, data):
-        global bucket_app
+        app = bucketapp.bucket_app
         num_sent = DTPHandler.send(self, data)
-        bucket_app.on_activity()
+        if app is not None:
+            bucket_app.on_activity()
         return num_sent
 
 class BucketAuthorizer(DummyAuthorizer):
     def get_home_dir(self, username):
-        global bucket_app
-        if bucket_app is not None:
-            return bucket_app.get_root()
+        app = bucketapp.bucket_app
+        if app is not None:
+            return app.get_root()
         else:
             return DummyAuthorizer.get_home_dir(self, username)
 
@@ -271,17 +269,15 @@ def read_washere_file(path):
         s = f.read().strip()
     return s
 
-def start_ftp_server(app = None):
-    global bucket_app
-    if app is not None:
-        bucket_app = app
+def start_ftp_server():
+    app = bucketapp.bucket_app
 
     authorizer = BucketAuthorizer()
     username = "user"
     password = "12345"
-    if bucket_app is not None:
-        username = bucket_app.cfg_get_ftpusername()
-        password = bucket_app.cfg_get_ftppassword()
+    if app is not None:
+        username = app.cfg_get_ftpusername()
+        password = app.cfg_get_ftppassword()
     authorizer.add_user(username, password, os.getcwd(), perm='elradfmwMT')
     #authorizer.add_anonymous(os.getcwd())
 
@@ -293,15 +289,15 @@ def start_ftp_server(app = None):
     ftp_handler.abstracted_fs = BucketFtpFilesystem
 
     port = 2133
-    if bucket_app is not None:
-        port = bucket_app.cfg_get_ftpport()
+    if app is not None:
+        port = app.cfg_get_ftpport()
 
     print("FTP port %d" % port)
 
     server = ThreadedFTPServer(('192.168.1.79', port), ftp_handler)
-    if bucket_app is not None:
-        bucket_app.ftp_server = server
-        bucket_app.ftp_start()
+    if app is not None:
+        app.ftp_server = server
+        app.ftp_start()
     else:
         server.serve_forever()
 

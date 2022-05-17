@@ -10,8 +10,6 @@ from urlparse import urlparse
 
 from pyftpdlib.log import logger, config_logging, debug
 
-bucket_app = None
-
 thumb_queue_lowpriority = Queue.queue()
 thumb_queue_highpriority = Queue.queue()
 thumb_queue_busy = False
@@ -22,11 +20,11 @@ keepcopy_thread = None
 
 class BucketHttpHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        global bucket_app
+        app = bucketapp.bucket_app
         query = urlparse(self.path).query
         query_components = dict(qc.split("=") for qc in query.split("&"))
-        if bucket_app is not None:
-            dir = os.path.join(bucket_app.get_root(), bucket_app.cfg_get_bucketname())
+        if app is not None:
+            dir = os.path.join(app.get_root(), app.cfg_get_bucketname())
         else:
             dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test")
         subfolders = [ f.path for f in os.scandir(dir) if f.is_dir() ]
@@ -198,10 +196,10 @@ def get_kept_name(fpath, dirname = "keep"):
     return os.path.join(head, dirname, tail)
 
 def keep_file(vpath, dirword = "keep"):
-    global bucket_app
+    app = bucketapp.bucket_app
     fpath = vpath.replace("/", os.path.sep)
-    if bucket_app is not None:
-        dir = os.path.join(bucket_app.get_root(), bucket_app.cfg_get_bucketname())
+    if app is not None:
+        dir = os.path.join(app.get_root(), app.cfg_get_bucketname())
     else:
         dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test")
     fpath2 = os.path.join(dir, fpath)
@@ -209,13 +207,13 @@ def keep_file(vpath, dirword = "keep"):
     os.makedirs(os.path.dirname(kpath), exist_ok=True)
     if os.path.isfile(fpath2) and os.path.isfile(kpath) == False:
         os.rename(fpath2, kpath)
-    if bucket_app is not None:
-        if len(bucket_app.disks) > 1:
-            for disk in bucket_app.disks:
-                if disk == bucket_app.disks[0]:
+    if app is not None:
+        if len(app.disks) > 1:
+            for disk in app.disks:
+                if disk == app.disks[0]:
                     continue
                 try:
-                    dir = os.path.join(disk, bucket_app.cfg_get_bucketname())
+                    dir = os.path.join(disk, app.cfg_get_bucketname())
                     fpath2 = os.path.join(dir, fpath)
                     kpath = get_kept_name(fpath2, dirname = dirword)
                     os.makedirs(os.path.dirname(kpath), exist_ok=True)
@@ -453,10 +451,6 @@ def find_exiftool():
     tarname = g[0]
     os.system("tar -xvf " + tarname)
     return find_exiftool()
-
-def register_app(app):
-    global bucket_app
-    bucket_app = app
 
 def main():
     config_logging()

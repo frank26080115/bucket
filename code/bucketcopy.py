@@ -14,6 +14,7 @@ COPIERSTATE_IDLE  = 0
 COPIERSTATE_CALC  = 1
 COPIERSTATE_COPY  = 2
 COPIERSTATE_DONE  = 3
+COPIERSTATE_FULL  = 4
 COPIERSTATE_ERROR = -1
 COPIERSTATE_RESTART = -2
 
@@ -147,6 +148,12 @@ class BucketCopier:
                     self.done_files += 1
                     self.done_size += fsize
                 return
+            total, free = bucketutils.get_disk_stats(dst)
+            if free < ((fsize / 1024 / 1024) + bucketapp.LOW_SPACE_THRESH_MB):
+                self.state = COPIERSTATE_FULL
+                self.app.on_disk_full()
+                return
+            self.app.pause_thumbnail_generation()
             self.file_totsize = fsize
             self.file_remain  = self.file_totsize
             self.activity_time = time.monotonic()
@@ -180,28 +187,30 @@ class BucketCopier:
                 else:
                     self.speed_calc = (speed * 0.25) + (self.speed_calc * 0.75)
             except FileNotFoundError as fnfe:
+                mntpt = bucketutils.find_mount_point(dst)
                 raise fnfe
             self.file_totsize = 0
             self.file_remain = 0
         except Exception as ex2:
+            logger.error("Copy file, \"" + cmd + "\", exception: " + str(ex2))
             if os.name == "nt":
                 raise ex2
-            pass
 
     def copy_worker(self):
         try:
             while True:
                 try:
                     time.sleep(0)
+                    self.app.try_get_time()
                     self.copy_dowork()
                 except Exception as ex2:
+                    logger.error("Copy thread inner exception: " + str(ex2))
                     if os.name == "nt":
                         raise ex2
-                    pass
         except Exception as ex1:
+            logger.error("Copy thread outer exception: " + str(ex1))
             if os.name == "nt":
                 raise ex1
-            pass
         self.copy_thread = None
 
     def copy_dowork(self):
@@ -220,15 +229,18 @@ class BucketCopier:
 
         if self.state == COPIERSTATE_CALC:
             self.calculate()
+            # this will never exit with state still being CALC (unless another thread changes it)
             time.sleep(1)
             return
 
         if self.mode == COPIERMODE_NONE or self.state == COPIERSTATE_IDLE or self.state == COPIERSTATE_DONE:
+            self.app.generate_next_thumbnail()
             time.sleep(1)
             return
 
         copylistfilenpath = os.path.join(self.app.disks[0], COPYLIST_FILENAME)
         if os.path.isfile(copylistfilenpath) == False:
+            self.app.generate_next_thumbnail()
             time.sleep(1)
             return
 
@@ -253,11 +265,15 @@ class BucketCopier:
                             break
                     self.copy_one_file(line, highprior=is_highpriority)
                 except Exception as ex1:
+                    logger.error("Copy error while reading cmd list: " + str(ex1))
                     if os.name == "nt":
                         raise ex1
-                    pass
+
+        # the list has been finished, we can resume thumbnail generation
+        self.app.generate_next_thumbnail()
+
         if self.mode != COPIERMODE_NONE and self.state == COPIERSTATE_COPY:
-            self.state != COPIERSTATE_DONE
+            self.state = COPIERSTATE_DONE
             time.sleep(1)
 
     def get_status(self):
@@ -293,28 +309,3 @@ class BucketCopier:
         if self.file_remain > 0 and self.file_totsize > 0:
             return True
         return False
-
-def get_size_string(x):
-    remMB = math.ceil(x / 1024 / 1024)
-    remGB = x / 1024 / 1024 / 1024
-    remTB = x / 1024 / 1024 / 1024 / 1024
-    sizestr = "?MB"
-    if remTB >= 1 or remGB >= 100:
-        sizestr = "%dGB" % (math.ceil(remGB))
-    elif remGB >= 10:
-        sizestr = "%.1fGB" % (remGB)
-    elif remGB >= 1:
-        sizestr = "%.2fGB" % (remGB)
-    else:
-        sizestr = "%dMB" % (remMB)
-    return sizestr
-
-def get_time_string(totalsecs):
-    minsremain = math.floor(totalsecs / 60)
-    secsremain = totalsecs % 60
-    if minsremain >= 100:
-        hoursremain = math.floor(minsremain / 60)
-        minsremain = minsremain % 60
-        return "%d:%02d:%02d" % (hoursremain, minsremain, secsremain)
-    else:
-        return "%d:%02d" % (minsremain, secsremain)
