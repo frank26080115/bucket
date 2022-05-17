@@ -7,16 +7,17 @@ is_embedded = True
 try:
     import board, busio
     import RPi.GPIO as GPIO
-    from gpiozero import Button
+    import gpiozero
+    import adafruit_ssd1306
 except:
+    print("warning: bucket is not running on embedded platform")
     is_embedded = False
     import cv2, numpy
 
 from PIL import Image, ImageDraw, ImageFont
 
-import bucketlogger
-
-logger = bucketlogger.logger
+#import bucketlogger
+#logger = bucketlogger.logger
 
 PIN_OLED_RESET = 17
 PIN_OLED_CS    = 27
@@ -25,9 +26,9 @@ PIN_BTN_1      = 19
 PIN_BTN_2      = 16
 PIN_BTN_3      = 26
 PIN_BTN_4      = 20
-PIN_BTN_5      = 40
+PIN_BTN_5      = 21
 
-PIN_PULLUP_CONFIG = False
+PIN_PULLUP_CONFIG = None
 BUTTON_DEBOUNCE   = 0.01
 
 BATT_VDIV_RLOWER      = 4.7  # resistor value of voltage divider
@@ -50,38 +51,53 @@ class BucketIO:
         self.batt_volt = [-1, -1]
         self.batt_chg  = [-100, -100]
         self.button_queue = queue.Queue()
-        self.i2c = busio.I2C(board.SCL, board.SDA)
+        self.adc_avail = False
 
     def hw_init(self):
+        self.init_pins()
+        self.init_buttons()
+        self.init_adc()
+        self.init_oled()
+        self.oled_blankimage()
+
+    def init_pins(self):
+        self.i2c           = busio.I2C(board.SCL, board.SDA)
         self.pin_oledreset = gpiozero.DigitalOutputDevice(PIN_OLED_RESET, initial_value=False)
         self.pin_oledcs    = gpiozero.DigitalOutputDevice(PIN_OLED_CS   , initial_value=False)
-        self.buzzer   = gpiozero.Buzzer(PIN_BUZZER)
-        self.button_1 = gpiozero.Button(PIN_BTN_1, pull_up = PIN_PULLUP_CONFIG, debounce_time = BUTTON_DEBOUNCE)
-        self.button_2 = gpiozero.Button(PIN_BTN_2, pull_up = PIN_PULLUP_CONFIG, debounce_time = BUTTON_DEBOUNCE)
-        self.button_3 = gpiozero.Button(PIN_BTN_3, pull_up = PIN_PULLUP_CONFIG, debounce_time = BUTTON_DEBOUNCE)
-        self.button_4 = gpiozero.Button(PIN_BTN_4, pull_up = PIN_PULLUP_CONFIG, debounce_time = BUTTON_DEBOUNCE)
-        self.button_5 = gpiozero.Button(PIN_BTN_5, pull_up = PIN_PULLUP_CONFIG, debounce_time = BUTTON_DEBOUNCE)
+        self.buzzer        = gpiozero.DigitalOutputDevice(PIN_BUZZER    , initial_value=False)
+
+    def init_buttons(self):
+        self.button_1 = gpiozero.Button(PIN_BTN_1, active_state = False, pull_up = PIN_PULLUP_CONFIG, bounce_time = BUTTON_DEBOUNCE)
+        self.button_2 = gpiozero.Button(PIN_BTN_2, active_state = False, pull_up = PIN_PULLUP_CONFIG, bounce_time = BUTTON_DEBOUNCE)
+        self.button_3 = gpiozero.Button(PIN_BTN_3, active_state = False, pull_up = PIN_PULLUP_CONFIG, bounce_time = BUTTON_DEBOUNCE)
+        self.button_4 = gpiozero.Button(PIN_BTN_4, active_state = False, pull_up = PIN_PULLUP_CONFIG, bounce_time = BUTTON_DEBOUNCE)
+        self.button_5 = gpiozero.Button(PIN_BTN_5, active_state = False, pull_up = PIN_PULLUP_CONFIG, bounce_time = BUTTON_DEBOUNCE)
+        self.buttons = [self.button_1, self.button_2, self.button_3, self.button_4, self.button_5]
         self.button_1.when_pressed = self.on_pressed_1
         self.button_2.when_pressed = self.on_pressed_2
         self.button_3.when_pressed = self.on_pressed_3
         self.button_4.when_pressed = self.on_pressed_4
         self.button_5.when_pressed = self.on_pressed_5
-        self.button_4.when_held    = self.on_pressed_4
-        self.button_5.when_held    = self.on_pressed_5
-        self.button_4.hold_time    = 0.5
-        self.button_5.hold_time    = 0.5
-        self.button_4.hold_repeat  = True
-        self.button_5.hold_repeat  = True
-        self.buttons = [self.button_1, self.button_2, self.button_3, self.button_4, self.button_5]
+        #self.button_4.when_held    = self.on_pressed_4
+        #self.button_5.when_held    = self.on_pressed_5
+        #self.button_4.hold_time    = 0.5
+        #self.button_5.hold_time    = 0.5
+        #self.button_4.hold_repeat  = True
+        #self.button_5.hold_repeat  = True
+        # note: gpiozero's button-hold detection is incredibly unreliable, do not use
+
+    def init_oled(self, reinit = False):
+        self.image = Image.new("1", (OLED_WIDTH, OLED_HEIGHT))
+        self.imagedraw = ImageDraw.Draw(self.image)
+        time.sleep(0.01)
         self.pin_oledreset.on()
         time.sleep(0.01)
         self.disp = adafruit_ssd1306.SSD1306_I2C(OLED_WIDTH, OLED_HEIGHT, self.i2c, addr = I2CADDR_OLED, external_vcc = False)
-        self.init_adc()
-        time.sleep(0.01)
-        self.init_oled()
-        self.oled_blankimage()
-
-    def init_oled(self):
+        self.disp.rotate(False) # this is required or else it's flipped by default
+        if reinit == False:
+            # testing shows that the initialization from the datasheet is worse
+            # just stick with the Adafruit code
+            return
         self.pin_oledreset.off()
         time.sleep(0.01)
         self.pin_oledreset.on()
@@ -103,8 +119,6 @@ class BucketIO:
             ]
         for c in cmds:
             self.disp.write_cmd(c)
-        self.image = Image.new("1", (OLED_WIDTH, OLED_HEIGHT))
-        self.imagedraw = ImageDraw.Draw(self.image)
 
     def oled_blankimage(self):
         self.imagedraw.rectangle((0, 0, OLED_WIDTH, OLED_HEIGHT), outline=0, fill=0)
@@ -114,21 +128,28 @@ class BucketIO:
         self.disp.show()
 
     def init_adc(self):
-        return self.i2c.writeto(I2CADDR_ADC, bytes([
-                  0x80 # setup
-                | 0x40 # internal reference, auto-shutdown reference, AIN3 is input
-                       # the rest is 0, use internal clock, unipolar mode, reset config register
-            ]))
+        try:
+            self.i2c.writeto(I2CADDR_ADC, bytes([
+                      0x80 # setup
+                    | 0x40 # internal reference, auto-shutdown reference, AIN3 is input
+                    | 0x01 # prevent reset
+                           # the rest is 0, use internal clock, unipolar mode
+                ]))
+            self.adc_avail = True
+        except:
+            self.adc_avail = False
 
     def batt_read(self):
-        self.i2c.writeto(I2CADDR_ADC, bytes([0x60])) # read chan 0, single ended, no scanning
+        if self.adc_avail == False:
+            return [-1, -1], [-1, -1], [-1, -1]
+        self.i2c.writeto(I2CADDR_ADC, bytes([0x61 + 0])) # read chan 0, single ended, no scanning
         result = bytearray(1)
         self.i2c.readfrom_into(I2CADDR_ADC, result)
         self.batt_raw[0] = result[0]
-        self.i2c.writeto(I2CADDR_ADC, bytes([0x62])) # read chan 1, single ended, no scanning
-        result = bytearray(1)
+        self.i2c.writeto(I2CADDR_ADC, bytes([0x61 + 2])) # read chan 1, single ended, no scanning
+        result = bytearray(2)
         self.i2c.readfrom_into(I2CADDR_ADC, result)
-        self.batt_raw[1] = result[0]
+        self.batt_raw[1] = result[1]
 
         self.batt_volt[0] = adc_to_voltage(self.batt_raw[0])
         self.batt_volt[1] = adc_to_voltage(self.batt_raw[1])
@@ -146,15 +167,15 @@ class BucketIO:
         self.buzzer.off()
 
     def on_pressed_1(self):
-        self.button_queue.enqueue(1)
+        self.button_queue.put(1)
     def on_pressed_2(self):
-        self.button_queue.enqueue(2)
+        self.button_queue.put(2)
     def on_pressed_3(self):
-        self.button_queue.enqueue(3)
+        self.button_queue.put(3)
     def on_pressed_4(self):
-        self.button_queue.enqueue(4)
+        self.button_queue.put(4)
     def on_pressed_5(self):
-        self.button_queue.enqueue(5)
+        self.button_queue.put(5)
 
     def pop_button(self):
         if self.button_queue.empty():
@@ -210,7 +231,7 @@ class BucketIO_Simulator:
 def adc_to_voltage(x):
     if x < 0:
         return 0
-    vbefore = x * BATT_ADC_INTERNAL_REF / pow(2, 8)
+    vbefore = x * BATT_ADC_INTERNAL_REF / (pow(2, 8) - 1)
     vafter = vbefore * (BATT_VDIV_RLOWER + BATT_VDIV_RUPPER) / BATT_VDIV_RLOWER
     vafter += BATT_VOLT_COMPENSATE
     return vafter
@@ -255,18 +276,52 @@ def has_rtc():
 
 def test_adc():
     bhw = BucketIO()
-    x = bhw.init_adc()
-    print("Bucket IO initialized, status-code = %s" % (str(x))
+    bhw.init_pins()
+    bhw.init_adc()
+    print("Bucket IO initialized ADC")
     while True:
         raws, volts, percentages = bhw.batt_read()
-        print("%d, %5d, %.2f, %.1f, %5d, %.2f, %.1f" % (time.monotonic(), raws[0], volts[0], percentages[0], raws[1], volts[1], percentages[1]))
+        print("%d, %5d, %.2f, %.1f, %5d, %.2f, %.1f" % (round(time.monotonic()), raws[0], volts[0], percentages[0], raws[1], volts[1], percentages[1]))
         time.sleep(1)
 
-def main():
+def test_buttons():
     bhw = BucketIO()
-    bhw.hw_init()
-    bhw.oled_show()
-    return 0
+    bhw.init_buttons()
+    print("Bucket IO initialized buttons")
+    while True:
+        time.sleep(1)
+        str = "%d, " % (round(time.monotonic()))
+        if bhw.button_queue.empty():
+            str += "none"
+        while bhw.button_queue.empty() == False:
+            str += "%d, " % bhw.button_queue.get()
+        print(str)
+
+def test_buzzer():
+    bhw = BucketIO()
+    bhw.init_pins()
+    print("Bucket IO initialized buzzer")
+    while True:
+        time.sleep(1)
+        bhw.buzzer_on()
+        print("%d - buzz" % (round(time.monotonic())))
+        time.sleep(0.2)
+        bhw.buzzer_off()
+
+def test_oled(t = 0):
+    bhw = BucketIO()
+    bhw.init_pins()
+    bhw.init_oled()
+    font = ImageFont.truetype("04b03mod.ttf", size = 8)
+    (font_width, font_height) = font.getsize("X")
+    while True:
+        bhw.oled_blankimage()
+        str = "Time: %.3f" % time.monotonic()
+        bhw.imagedraw.text((2, 2), str, font=font, fill=255)
+        bhw.oled_show()
+        print(str)
+        time.sleep(t) # this manages about 10 FPS
 
 if __name__ == "__main__":
-    main()
+    # use this space to run tests
+    bhw = BucketIO() # make an instance for running in terminal
