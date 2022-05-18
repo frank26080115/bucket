@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import sys, time, subprocess, queue
+import sys, os, time, subprocess, queue, glob
 
 is_embedded = True
 
@@ -16,8 +16,13 @@ except:
 
 from PIL import Image, ImageDraw, ImageFont
 
-#import bucketlogger
-#logger = bucketlogger.logger
+import bucketutils
+
+try:
+    import bucketlogger
+    logger = bucketlogger.getLogger()
+except:
+    pass
 
 PIN_OLED_RESET = 17
 PIN_OLED_CS    = 27
@@ -35,6 +40,7 @@ BATT_VDIV_RLOWER      = 4.7  # resistor value of voltage divider
 BATT_VDIV_RUPPER      = 15.0 # resistor value of voltage divider
 BATT_VOLT_COMPENSATE  = 0.4  # there are diodes that will drop the voltage a bit
 BATT_ADC_INTERNAL_REF = 2.048
+BATT_VOLT_CALIBRATION_SCALE = 1.2943
 
 OLED_WIDTH  = 102
 OLED_HEIGHT = 64
@@ -185,6 +191,12 @@ class BucketIO:
     def is_btn_held(self, num):
         return self.buttons[num].is_held
 
+    def cpu_highfreq(self):
+        cpu_highfreq()
+
+    def cpu_lowfreq(self):
+        cpu_lowfreq()
+
 class BucketIO_Simulator:
     def __init__(self):
         self.is_sim = True
@@ -228,11 +240,18 @@ class BucketIO_Simulator:
     def buzzer_off(self):
         pass
 
+    def cpu_highfreq(self):
+        pass
+
+    def cpu_lowfreq(self):
+        pass
+
 def adc_to_voltage(x):
     if x < 0:
         return 0
     vbefore = x * BATT_ADC_INTERNAL_REF / (pow(2, 8) - 1)
     vafter = vbefore * (BATT_VDIV_RLOWER + BATT_VDIV_RUPPER) / BATT_VDIV_RLOWER
+    vafter *= BATT_VOLT_CALIBRATION_SCALE
     vafter += BATT_VOLT_COMPENSATE
     return vafter
 
@@ -273,6 +292,44 @@ def has_rtc():
     if "no usable clock" in x or "cannot access the hardware clock" in x:
         return False
     return False
+
+def cpu_userspace():
+    g = glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor", recursive=True)
+    for cpu in g:
+        os.system("sudo sh -c \"echo userspace > %s\"" % cpu)
+
+def cpu_get_maxminfreq(word):
+    if os.name == "nt":
+        return 0
+    maxfreq = 0
+    minfreq = 999999999999
+    g = glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_" + word + "_freq", recursive=True)
+    for cpu in g:
+        str = subprocess.run(["cat", cpu], capture_output=True, text=True).stdout
+        str = str.strip() if str is not None else ""
+        if str.isnumeric():
+            x = int(str)
+            if x > maxfreq:
+                maxfreq = x
+            if x < minfreq:
+                minfreq = x
+    if word == "max":
+        return maxfreq
+    else:
+        return minfreq
+
+CPU_MAXFREQ = cpu_get_maxminfreq("max")
+CPU_MINFREQ = cpu_get_maxminfreq("min")
+
+def cpu_highfreq(freq_hz = CPU_MAXFREQ):
+    g = glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_setspeed", recursive=True)
+    for cpu in g:
+        os.system("sudo sh -c \"echo %d > %s\"" % (freq_hz, cpu))
+
+def cpu_lowfreq(freq_hz = CPU_MINFREQ):
+    g = glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_setspeed", recursive=True)
+    for cpu in g:
+        os.system("sudo sh -c \"echo %d > %s\"" % (freq_hz, cpu))
 
 def test_adc():
     bhw = BucketIO()
@@ -323,5 +380,25 @@ def test_oled(t = 0):
         time.sleep(t) # this manages about 10 FPS
 
 if __name__ == "__main__":
-    # use this space to run tests
-    bhw = BucketIO() # make an instance for running in terminal
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "adc":
+            test_adc()
+        elif sys.argv[1] == "oled":
+            test_oled()
+        elif sys.argv[1] == "buzzer":
+            test_buzzer()
+        elif sys.argv[1] == "buttons":
+            test_buttons()
+        elif sys.argv[1] == "cpu":
+            cpu_userspace()
+            print("CPU frequencies range: %d - %d" % (CPU_MINFREQ, CPU_MAXFREQ))
+        elif sys.argv[1] == "cpu_high":
+            cpu_userspace()
+            print("CPU frequencies range: %d - %d" % (CPU_MINFREQ, CPU_MAXFREQ))
+            cpu_highfreq()
+        elif sys.argv[1] == "cpu_low":
+            cpu_userspace()
+            print("CPU frequencies range: %d - %d" % (CPU_MINFREQ, CPU_MAXFREQ))
+            cpu_lowfreq()
+    else:
+        bhw = BucketIO() # make an instance for running in terminal

@@ -3,12 +3,14 @@
 import os, sys, time, datetime, shutil, subprocess, signal, random, math, glob
 import threading, queue, socket
 
+import bucketapp, bucketutils, bucketlogger
+
 from PIL import Image, ImageOps, ImageDraw, ImageFont, ExifTags
 
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from urlparse import urlparse
 
-from pyftpdlib.log import logger, config_logging, debug
+logger = bucketlogger.getLogger()
 
 thumb_queue_lowpriority = Queue.queue()
 thumb_queue_highpriority = Queue.queue()
@@ -93,7 +95,8 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
                             fn, fe = os.path.splitext(ff)
                             p = dd + "/" + ff
                             if fe.lower() == ".jpg" or fe.lower() == ".arw":
-                                writeout("<a href=\"" + p + "\">" + p + "</a><br />\r\n")
+                                classes = " imgkept" if f in files_kept else (" imgdeleted" if f in files_del else "")
+                                writeout("<a href=\"" + p + "\" class=\"imgurl" + classes + "\">" + p + "</a><br />\r\n")
                         writeout("</div>")
                     writeout("</body></html>")
                 return
@@ -195,17 +198,25 @@ def get_kept_name(fpath, dirname = "keep"):
     head, tail = os.path.split(fpath)
     return os.path.join(head, dirname, tail)
 
-def keep_file(vpath, dirword = "keep"):
+def keep_file(vpath, dirword = "keep", canrecurse = True, fromhttp = True):
     app = bucketapp.bucket_app
-    fpath = vpath.replace("/", os.path.sep)
     if app is not None:
         dir = os.path.join(app.get_root(), app.cfg_get_bucketname())
     else:
         dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test")
-    fpath2 = os.path.join(dir, fpath)
+    if fromhttp:
+        fpath = vpath.replace("/", os.path.sep)
+        fpath2 = os.path.join(dir, fpath)
+    else:
+        fpath2 = vpath
+        fpathtail = os.path.abspath(fpath2)[len(dir):]
+
     kpath = get_kept_name(fpath2, dirname = dirword)
     os.makedirs(os.path.dirname(kpath), exist_ok=True)
     if os.path.isfile(fpath2) and os.path.isfile(kpath) == False:
+        os.rename(fpath2, kpath)
+    elif os.path.isfile(fpath2) and os.path.isfile(kpath) == True and os.getsize(kpath) <= 0:
+        os.remove(kpath)
         os.rename(fpath2, kpath)
     if app is not None:
         if len(app.disks) > 1:
@@ -214,10 +225,16 @@ def keep_file(vpath, dirword = "keep"):
                     continue
                 try:
                     dir = os.path.join(disk, app.cfg_get_bucketname())
-                    fpath2 = os.path.join(dir, fpath)
+                    if fromhttp:
+                        fpath2 = os.path.join(dir, fpath)
+                    else:
+                        fpath2 = os.path.join(dir, fpathtail)
                     kpath = get_kept_name(fpath2, dirname = dirword)
                     os.makedirs(os.path.dirname(kpath), exist_ok=True)
                     if os.path.isfile(fpath2) and os.path.isfile(kpath) == False:
+                        os.rename(fpath2, kpath)
+                    elif os.path.isfile(fpath2) and os.path.isfile(kpath) == True and os.getsize(kpath) <= 0:
+                        os.remove(kpath)
                         os.rename(fpath2, kpath)
                     elif os.path.isfile(fpath2) == False and os.path.isfile(kpath) == False and dirword == "keep":
                         # there's no available file on the redundant disk to simply rename
@@ -228,6 +245,11 @@ def keep_file(vpath, dirword = "keep"):
                     logger.error("Error in keep_file for another drive(\"" + disk + "\", \"" + vpath + "\"): " + str(ex2))
                     if os.name == "nt":
                         raise ex2
+    if canrecurse:
+        if vpath.lower().endswith(".jpg"):
+            keep_file(vpath.replace(".JPG", ".ARW").replace(".jpg", ".arw"), dirword = dirword, canrecurse = False, fromhttp = fromhttp)
+        elif vpath.lower().endswith(".arw"):
+            keep_file(vpath.replace(".ARW", ".JPG").replace(".arw", ".jpg"), dirword = dirword, canrecurse = False, fromhttp = fromhttp)
 
 def enqueue_keepcopy(src, dest):
     keepcopy_queue.put(src + ";" + dest)
@@ -293,6 +315,12 @@ def generate_thumbnail(filepath, skip_if_exists=True):
             os.makedirs(os.path.dirname(thumbpath), exist_ok=True)
             img.save(thumbpath, "JPEG")
 
+def move_if_rated(filepath):
+    exif = get_image_exif(filepath)
+    rating = get_image_rating(exif)
+    if rating > 0:
+        keep_file(filepath, fromhttp = False)
+
 def enqueue_thumb_generation(filepath, important=False):
     global thumb_queue_lowpriority
     global thumb_queue_highpriority
@@ -314,6 +342,8 @@ def thumbgen_worker():
     global thumb_gen_thread
     try:
         while True:
+            time.sleep(0) # thread yield
+            app = bucketapp.bucket_app
             try:
                 was_high = False
                 x = None
@@ -325,7 +355,10 @@ def thumbgen_worker():
                     x = thumb_queue_lowpriority.get()
 
                 if x is not None:
+                    if app is not None:
+                        app.cpu_highfreq()
                     generate_thumbnail(x)
+                    move_if_rated(x)
                     if was_high and thumb_queue_highpriority.empty():
                         thumb_queue_busy = False
                     time.sleep(0)
@@ -343,10 +376,11 @@ def thumbgen_worker():
     except Exception as ex1:
         logger.error("Thumb generation thread outer exception: " + str(ex1))
         thumb_gen_thread = None
+        thumb_queue_busy = False
         if os.name == "nt":
             raise ex1
 
-def thumbgen_wait(t = 0.001):
+def thumbgen_wait(t = 0.1):
     global thumb_queue_highpriority
     global thumb_queue_busy
     global thumb_gen_thread
@@ -361,6 +395,10 @@ def thumbgen_clear():
     while thumb_queue_lowpriority.empty() == False:
         remainder.append(thumb_queue_lowpriority.get())
     return remainder
+
+def thumbgen_is_busy():
+    global thumb_queue_busy
+    return thumb_queue_busy
 
 def generate_zoomnail(filepath, skip_if_exists=True):
     zoomedpath = get_thumbname(filepath, filetail="zoomed")
@@ -422,6 +460,17 @@ def get_image_focus_point(exiftxt):
                 if numstrs[0].isnumeric() and numstrs[1].isnumeric() and numstrs[2].isnumeric() and numstrs[3].isnumeric():
                     return [int(numstrs[0]), int(numstrs[1]), int(numstrs[2]), int(numstrs[3])]
     return None
+
+def get_image_rating(exiftxt):
+    lines = exiftxt.split('\n')
+    for line in lines:
+        if line.lower().startswith("Focus Location".lower()):
+            parts = line.split(' ')
+            if len(parts) >= 3:
+                ratingstr = parts[-1]
+                if ratingstr.isnumeric():
+                    return int(ratingstr)
+    return 0
 
 def extract_jpg_preview(filepath):
     # use exiftool to extract embedded preview out of raw file

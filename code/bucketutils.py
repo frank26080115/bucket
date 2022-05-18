@@ -30,13 +30,26 @@ def get_time_string(totalsecs):
         return "%d:%02d" % (minsremain, secsremain)
 
 def find_mount_point(path):
-    path = os.path.abspath(path)
-    while not os.path.ismount(path):
-        path = os.path.dirname(path)
-    return path
+    abspath = os.path.abspath(path)
+    x = abspath
+    try:
+        while not os.path.ismount(x):
+            x = os.path.dirname(x)
+        return x
+    except:
+        # probably unmounted
+        return "/"
 
 def is_still_mounted(path):
     app = bucketapp.bucket_app
+    mntpt = find_mount_point(path)
+    if mntpt is None or len(mntpt) <= 1:
+        return False
+    elif app is not None:
+        app.update_disk_list()
+        if mntpt not in app.disks or os.path.isdir(mntpt) == False:
+            return False
+    return True
 
 def path_is_image_file(path):
     app = bucketapp.bucket_app
@@ -87,13 +100,16 @@ def is_disk_camera(path):
     dcim = os.path.join(path, "DCIM")
     return os.path.isdir(dcim)
 
-def rename_camera_file(path):
+def rename_camera_file(path, datestroverride = None):
     app = bucketapp.bucket_app
     head, tail = os.path.split(path)
-    prf = app.cfg_get_prefix()
+    prf = app.cfg_get_prefix() if app is not None or "DSC"
     # build the new file name with the date code
     s1 = tail[0:len(prf)]
-    s2 = app.get_date_str()
+    if datestroverride is None:
+        s2 = app.get_date_str()
+    else:
+        s2 = datestroverride
     s3 = tail[len(prf):]
     nfname = s1 + s2 + s3
     # build the new dir name with the date code
@@ -101,9 +117,9 @@ def rename_camera_file(path):
     ndir = s2 + "-" + tail2
     return ndir, nfname
 
-def rename_camera_file_path(path, bucketname, disk):
+def rename_camera_file_path(path, bucketname, disk, dateoverride = None):
     bucketname = bucketname
-    ndir, nfname = rename_camera_file(path)
+    ndir, nfname = rename_camera_file(path, datestroverride = dateoverride)
     npath = os.path.join(disk, bucketname)
     npath = os.path.join(npath, ndir)
     os.makedirs(npath, exist_ok=True)
@@ -148,7 +164,6 @@ def ext_is_raw(fileext):
         if re.lower() == fileext.lower():
             return True
     return False
-
 
 def get_img_exif_date(file):
     if file is None:
@@ -202,17 +217,41 @@ def get_disk_stats(path):
     total = 0
     free = 0
     try:
-        statvfs = os.statvfs(find_mount_point(path))
-        free = statvfs.f_frsize * statvfs.f_bfree
-        total = statvfs.f_frsize * statvfs.f_blocks
-    except Exception as ex:
-        if os.name == "nt":
-            pass
-        pass
-    try:
-        total, used, free = shutil.disk_usage(find_mount_point(path))
+        x = psutil.disk_usage(find_mount_point(path))
+        total = x.total
+        free = x.free
     except:
         pass
+    if total <= 0:
+        try:
+            statvfs = os.statvfs(find_mount_point(path))
+            free = statvfs.f_frsize * statvfs.f_bfree
+            total = statvfs.f_frsize * statvfs.f_blocks
+        except Exception as ex:
+            if os.name == "nt":
+                pass
+            pass
+    if total <= 0:
+        try:
+            total, used, free = shutil.disk_usage(find_mount_point(path))
+        except:
+            pass
 
     return total / 1024 / 1024, free / 1024 / 1024 # return in megabytes
 
+def get_disk_label(path):
+    try:
+        mp = find_mount_point(path)
+        res = mp
+        lsblk = subprocess.run(["lsblk", "--output", "MOUNTPOINT,LABEL"], capture_output=True, text=True).stdout
+        lines = lsblk.split('\n')
+        for li in lines:
+            limp = li[0:li.index(' ')]
+            if limp == mp:
+                lbl = li[len(mp) + 1:].strip()
+                if len(lbl) > 0:
+                    res = lbl
+                    return res
+        return res
+    except Exception as ex:
+        return None

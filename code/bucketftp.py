@@ -8,9 +8,9 @@ from pyftpdlib.servers import FTPServer, ThreadedFTPServer
 from pyftpdlib.filesystems import AbstractedFS, FilesystemError
 from pyftpdlib._compat import unicode, u, PY3
 
-import bucketapp, bucketio, bucketlogger
+import bucketapp, bucketio, bucketutils, bucketlogger
 
-logger = bucketlogger.logger
+logger = bucketlogger.getLogger()
 logger2 = logging.getLogger('pyftpdlib')
 
 class BucketFtpHandler(FTPHandler):
@@ -138,6 +138,8 @@ class BucketFtpFilesystem(AbstractedFS):
     def open(self, filename, mode):
         assert isinstance(filename, unicode), filename
         app = bucketapp.bucket_app
+        if app is not None:
+            app.cpu_highfreq()
         if "w" in mode and (app is None or app.still_has_space() == False):
             raise FilesystemError("Out of disk space")
         if "w" in mode:
@@ -250,7 +252,7 @@ def follow_washere(path):
         if os.path.isfile(npath):
             return npath
         # if the file wasn't found, maybe the disk moved to another mount point?
-        disks = bucketapp.get_mounted_disks()
+        disks = bucketutils.get_mounted_disks()
         for disk in disks:
             maindir, fname = os.path.split(npath)
             dir3, dir2 = os.path.split(maindir)

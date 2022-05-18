@@ -6,9 +6,9 @@ import psutil
 
 from PIL import Image, ImageDraw, ImageFont, ExifTags
 
-import bucketapp, bucketio, bucketftp, bucketlogger
+import bucketapp, bucketio, bucketftp, bucketlogger, bucketutils
 
-logger = bucketlogger.logger
+logger = bucketlogger.getLogger()
 
 MENUITEM_BACK         = 0
 MENUITEM_CLEARWARN    = 1
@@ -244,9 +244,9 @@ class BucketMenu:
     def show_ftp_info(self):
         txtlist = []
         txtlist.append("WIFI SSID:")
-        txtlist.append(bucketapp.get_wifi_ssid())
+        txtlist.append(bucketutils.get_wifi_ssid())
         txtlist.append("IP ADDR:")
-        txtlist.append(bucketapp.get_wifi_ip())
+        txtlist.append(bucketutils.get_wifi_ip())
         txtlist.append("FTP PORT:")
         txtlist.append(str(self.app.cfg_get_ftpport()))
         txtlist.append("FTP USERNAME:")

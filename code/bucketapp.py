@@ -7,9 +7,10 @@ import psutil
 from PIL import Image, ImageDraw, ImageFont, ExifTags
 import pyftpdlib.log
 
-import bucketio, bucketmenu, bucketftp, bucketviewer
+import bucketio, bucketmenu, bucketftp, bucketviewer, bucketlogger
 
 bucket_app = None
+logger = bucketlogger.getLogger()
 
 CONFIG_FILE_NAME    = "bucket_cfg.json"
 LOW_SPACE_THRESH_MB = 200
@@ -51,6 +52,7 @@ class BucketApp:
         self.session_last_nonact  = None
         self.alarm_reason = 0
         self.batt_lowest  = 100
+        self.cpu_freq_high = False
         self.reset_stats()
 
         self.font = ImageFont.truetype("04b03mod.ttf", size = 8)
@@ -78,7 +80,7 @@ class BucketApp:
         self.hwio.buzzer_off()
 
     def update_disk_list(self):
-        partitions = get_mounted_disks()
+        partitions = bucketutils.get_mounted_disks()
         if len(self.disks) <= 0:
             # on boot, go from no disks to having many disks
             # use the biggest disk as primary write target
@@ -109,7 +111,7 @@ class BucketApp:
                     newlist.append(i)
             self.disks = newlist
             if not found:
-                bucketlogger.reconfig(self)
+                bucketlogger.reconfig()
 
     def get_root(self):
         self.update_disk_list()
@@ -120,11 +122,11 @@ class BucketApp:
     def still_has_space(self):
         if len(self.disks) <= 0:
             return False
-        total, free = get_disk_stats(self.disks[0])
+        total, free = bucketutils.get_disk_stats(self.disks[0])
         if free < LOW_SPACE_THRESH_MB:
             # another disk available?
             while i < len(self.disks):
-                total2, free2 = get_disk_stats(self.disks[i])
+                total2, free2 = bucketutils.get_disk_stats(self.disks[i])
                 if free2 >= LOW_SPACE_THRESH_MB: # free space on another disk?
                     disk0 = self.disks[i]
                     self.disks[i] = self.disks[0]
@@ -155,11 +157,35 @@ class BucketApp:
     def on_nonactivity(self):
         self.session_last_nonact = time.monotonic()
 
+    def cpu_highfreq(self):
+        if self.cpu_freq_high == True:
+            return
+        self.cpu_freq_high = True
+        self.hwio.cpu_highfreq()
+
+    def cpu_lowfreq(self):
+        if self.cpu_freq_high == False:
+            return
+        self.cpu_freq_high = False
+        self.hwio.cpu_lowfreq()
+
+    def cpu_choosefreq(self):
+        busy = False
+        if self.session_last_act is not None and (time.monotonic() - self.session_last_act) < 2:
+            busy = True
+        elif self.copier.is_busy() or bucketviewer.thumbgen_is_busy():
+            busy = True
+        if busy == False:
+            self.cpu_lowfreq()
+        # all the other threads will automatically call cpu_highfreq
+        # elif busy == True:
+        #     self.cpu_highfreq()
+
     def load_cfg(self):
         import json
 
         # find all disks that may contain a config file
-        disks = get_mounted_disks()
+        disks = bucketutils.get_mounted_disks()
         disks.sort(reverse = True, key = disk_sort_func)
         if len(disks) <= 0:
             return
@@ -187,7 +213,7 @@ class BucketApp:
                         hdr = dir[0:dir.index('-')]
                         if hdr.isnumeric() and len(hdr) == 6:
                             self.last_file_date = datetime.datetime.strptime("20" + hdr, "%Y%m%d")
-                            bucketlogger.reconfig(self)
+                            bucketlogger.reconfig()
 
     def cfg_get_genericstring(self, key, defval):
         result = defval
@@ -288,8 +314,8 @@ class BucketApp:
         return self.cfg_get_genericstring("bucket_name", "photos")
 
     def on_before_open(self, filepath):
-        isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(filepath)
-        israw = ext_is_raw(fileext)
+        isimg, filename, filedatecode, filenumber, fileext = bucketutils.path_is_image_file(filepath)
+        israw = bucketutils.ext_is_raw(fileext)
         if isimg and israw:
             fnum = int(filenumber)
             if self.session_first_number is None:
@@ -301,8 +327,8 @@ class BucketApp:
     def on_file_received(self, file):
         self.last_file = file
 
-        isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(file)
-        israw = ext_is_raw(fileext) # ideally we only count statistics for raw files, otherwise this code can lose a raw file and not notify the user when the corresponding jpg file exists
+        isimg, filename, filedatecode, filenumber, fileext = bucketutils.path_is_image_file(file)
+        israw = bucketutils.ext_is_raw(fileext) # ideally we only count statistics for raw files, otherwise this code can lose a raw file and not notify the user when the corresponding jpg file exists
         fnum = int(filenumber)
 
         # use consecutive identical numbers as an indicator that the camera is in raw+jpg mode
@@ -353,7 +379,7 @@ class BucketApp:
 
         # the way the FTP code works is that when this callback is called, the file has not been renamed yet
         if isimg:
-            npath = rename_camera_file_path(file, self.cfg_get_bucketname(), self.disks[0])
+            npath = bucketutils.rename_camera_file_path(file, self.cfg_get_bucketname(), self.disks[0])
             shutil.move(file, npath)
             # keep a record of the move so the FTP can still find it
             with open(file + ".washere", "w") as whf:
@@ -374,7 +400,7 @@ class BucketApp:
                     self.copier.enqueue_copy(npath + ";" + os.path.join(destdisk, npath[len(origdisk):]))
 
     def on_missed_file(self, file):
-        isimg, filename, filedatecode, filenumber, fileext = path_is_image_file(file)
+        isimg, filename, filedatecode, filenumber, fileext = bucketutils.path_is_image_file(file)
         if isimg and filenumber.isnumeric():
             fnum = int(filenumber)
             if fnum not in self.session_lost_list:
@@ -397,11 +423,11 @@ class BucketApp:
             if self.last_file is not None and self.has_date is None:
                 flower = self.last_file.lower()
                 if flower.endswith(".jpg") or flower.endswith(".jpeg") or flower.endswith(".arw"):
-                    self.has_date = get_img_exif_date(self.last_file)
+                    self.has_date = bucketutils.get_img_exif_date(self.last_file)
                     if self.has_date is None: # prevent infinite loop from error
                         self.last_file = None
                     else:
-                        bucketlogger.reconfig(self)
+                        bucketlogger.reconfig()
 
     def generate_next_thumbnail(self):
         if self.thumbnail_queue.empty() == False:
@@ -556,7 +582,7 @@ class BucketApp:
         hdr = "WIFI: "
         txtlist = []
 
-        ipstr = get_wifi_ip()
+        ipstr = bucketutils.get_wifi_ip()
         nstr = hdr + ipstr
         (font_width, font_height) = self.font.getsize(nstr)
         if font_width < (bucketio.OLED_WIDTH - (pad * 2)):
@@ -568,7 +594,7 @@ class BucketApp:
             else:
                 txtlist.append("..." + ipparts[2] + "." + ipparts[3])
 
-        ssid = get_wifi_ssid()
+        ssid = bucketutils.get_wifi_ssid()
         if ssid is not None and len(ssid) > 0:
             (font_width, font_height) = self.font.getsize(hdr + ssid)
             if font_width < (bucketio.OLED_WIDTH - (pad * 2)):
@@ -652,14 +678,15 @@ class BucketApp:
                 idc = "[%d]: " % disk_idx
             str1 = "DISK" + idc
             str2 = "FREE@@" + idc
-            total, free = get_disk_stats(disk)
+            total, free = bucketutils.get_disk_stats(disk)
             is_copying = disk_idx > 0 and self.copier.is_busy() # indicate cloning is active
-            (font_width, font_height) = self.font.getsize(str1 + (">" if is_copying else "") + disk)
-            if font_width > (bucketio.OLED_WIDTH - (pad * 2)):
+            disklabel = bucketutils.get_disk_label(disk)
+            (font_width, font_height) = self.font.getsize(str1 + (">" if is_copying else "") + disklabel)
+            if font_width > (bucketio.OLED_WIDTH - (pad * 2)) and os.path.sep in disklabel:
                 # shorten the disk name to fit screen
-                disk = disk[1:]
-                disk = disk[disk.index(os.path.sep):]
-            txtlist.append(str1 + (">" if is_copying else "") + disk)
+                disklabel = disklabel.strip(os.path.sep)
+                disklabel = disklabel[disklabel.index(os.path.sep):]
+            txtlist.append(str1 + (">" if is_copying else "") + disklabel)
             if self.fsize_avg > 0:
                 left = math.floor(free / self.fsize_avg) # calculate how many images can be saved
                 str3 = ("%d" % (left)) + ("?" if 0 in self.fsize_list else "") # append unsure indicator if required
@@ -737,7 +764,7 @@ class BucketApp:
 
 def disk_sort_func(x):
     global bucket_app
-    total, free = get_disk_stats(x)
+    total, free = bucketutils.get_disk_stats(x)
     if bucket_app is None or bucket_app.cfg_disk_prefer_total_vs_free():
         return total
     else:
@@ -746,12 +773,12 @@ def disk_sort_func(x):
 def disk_unmount(path):
     if os.name == 'nt':
         return
-    os.system("umount " + find_mount_point(path))
+    os.system("umount " + bucketutils.find_mount_point(path))
 
 def disk_unmount_start(path):
     if os.name == 'nt':
         return
-    command = "umount " + find_mount_point(path)
+    command = "umount " + bucketutils.find_mount_point(path)
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return process
 
