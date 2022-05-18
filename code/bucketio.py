@@ -38,9 +38,10 @@ BUTTON_DEBOUNCE   = 0.01
 
 BATT_VDIV_RLOWER      = 4.7  # resistor value of voltage divider
 BATT_VDIV_RUPPER      = 15.0 # resistor value of voltage divider
-BATT_VOLT_COMPENSATE  = 0.4  # there are diodes that will drop the voltage a bit
+BATT_VOLT_COMPENSATE  = 0.0  # there are diodes that will drop the voltage a bit
 BATT_ADC_INTERNAL_REF = 2.048
-BATT_VOLT_CALIBRATION_SCALE = 1.2943
+BATT_VOLT_CALIBRATION_SCALE_M = 2.7027
+BATT_VOLT_CALIBRATION_SCALE_B = -8.10811
 
 OLED_WIDTH  = 102
 OLED_HEIGHT = 64
@@ -135,12 +136,14 @@ class BucketIO:
 
     def init_adc(self):
         try:
-            self.i2c.writeto(I2CADDR_ADC, bytes([
+            self.adc_setup_bytes = bytes([
                       0x80 # setup
                     | 0x40 # internal reference, auto-shutdown reference, AIN3 is input
+                    | 0x00 # unipolar, input range 0-Vref
                     | 0x01 # prevent reset
                            # the rest is 0, use internal clock, unipolar mode
-                ]))
+                ])
+            self.i2c.writeto(I2CADDR_ADC, self.adc_setup_bytes)
             self.adc_avail = True
         except:
             self.adc_avail = False
@@ -148,13 +151,10 @@ class BucketIO:
     def batt_read(self):
         if self.adc_avail == False:
             return [-1, -1], [-1, -1], [-1, -1]
-        self.i2c.writeto(I2CADDR_ADC, bytes([0x61 + 0])) # read chan 0, single ended, no scanning
-        result = bytearray(1)
-        self.i2c.readfrom_into(I2CADDR_ADC, result)
-        self.batt_raw[0] = result[0]
-        self.i2c.writeto(I2CADDR_ADC, bytes([0x61 + 2])) # read chan 1, single ended, no scanning
+        self.i2c.writeto(I2CADDR_ADC, bytes([self.adc_setup_bytes[0], 0x01 + (0x01 << 1)])) # read up to chan 1, single ended
         result = bytearray(2)
         self.i2c.readfrom_into(I2CADDR_ADC, result)
+        self.batt_raw[0] = result[0]
         self.batt_raw[1] = result[1]
 
         self.batt_volt[0] = adc_to_voltage(self.batt_raw[0])
@@ -251,7 +251,12 @@ def adc_to_voltage(x):
         return 0
     vbefore = x * BATT_ADC_INTERNAL_REF / (pow(2, 8) - 1)
     vafter = vbefore * (BATT_VDIV_RLOWER + BATT_VDIV_RUPPER) / BATT_VDIV_RLOWER
-    vafter *= BATT_VOLT_CALIBRATION_SCALE
+
+    vafter *= BATT_VOLT_CALIBRATION_SCALE_M
+    vafter += BATT_VOLT_CALIBRATION_SCALE_B
+    # 8.0 = 5.96 * m + b
+    # 6.0 = 5.22 * m + b
+
     vafter += BATT_VOLT_COMPENSATE
     return vafter
 
