@@ -24,6 +24,11 @@ restricted_names = [
     os.path.sep + bucketapp.CONFIG_FILE_NAME,
     ".washere",
     ".lock",
+    "SONYCARD.IND",
+]
+
+restricted_dirs = [
+    "AVF_INFO",
 ]
 
 class BucketCopier:
@@ -32,8 +37,6 @@ class BucketCopier:
         self.reset_all()
 
     def start(self, mode):
-        if mode == self.mode:
-            return
         self.total_files  = 0
         self.total_size   = 0
         self.done_files   = 0
@@ -45,9 +48,9 @@ class BucketCopier:
         self.speed_calc    = None
         self.error = ""
         self.mode = mode
-        if self.state != COPIERSTATE_IDLE:
+        if self.state != COPIERSTATE_IDLE and self.mode != COPIERMODE_NONE:
             self.state = COPIERSTATE_RESTART
-        if self.copy_thread == None:
+        if self.copy_thread is None and (self.mode != COPIERMODE_NONE or self.priority_queue.empty() == False):
             self.copy_thread = threading.Thread(target=self.copy_worker, daemon=True)
             self.copy_thread.start()
 
@@ -78,7 +81,8 @@ class BucketCopier:
         if os.path.isfile(copylistfilenpath):
             try:
                 os.remove(copylistfilenpath)
-            except:
+            except Exception as ex:
+                logger.error("Copy-thread error deleting task list \"" + copylistfilenpath + "\", exception: " + str(ex))
                 pass
 
         for origdisk in self.app.disks:
@@ -112,6 +116,10 @@ class BucketCopier:
                             break
                         if (os.path.sep + "delete" + os.path.sep).lower() in srcfile.lower():
                             # do not copy files that the user has marked to delete
+                            acceptable = False
+                            break
+                    for unacceptable in restricted_dirs:
+                        if (os.path.sep + unacceptable + os.path.sep) in srcfile:
                             acceptable = False
                             break
                     if acceptable == False:
@@ -157,7 +165,7 @@ class BucketCopier:
             # something to do!
             self.state = COPIERSTATE_COPY
             self.start_time = time.monotonic()
-            if self.copy_thread == None:
+            if self.copy_thread is None:
                 self.copy_thread = threading.Thread(target=self.copy_worker, daemon=True)
                 self.copy_thread.start()
         else:
@@ -166,7 +174,7 @@ class BucketCopier:
 
     def enqueue_copy(self, cmd):
         self.priority_queue.put(cmd)
-        if self.copy_thread == None:
+        if self.copy_thread is None:
             self.copy_thread = threading.Thread(target=self.copy_worker, daemon=True)
             self.copy_thread.start()
 
@@ -191,7 +199,7 @@ class BucketCopier:
             # check overwrite rules
             if os.path.isfile(dst):
                 existing_date = os.path.getmtime(dst)
-                if os.path.getsize(dst) == fsize and set_date == existing_date:
+                if os.path.getsize(dst) == fsize and set_date is not None and set_date != 0 and set_date == existing_date:
                     if highprior == False:
                         self.done_files += 1
                         self.done_size += fsize
@@ -234,7 +242,8 @@ class BucketCopier:
                 # set the modified time for the file
                 try:
                     os.utime(dst, (set_date, set_date))
-                except:
+                except Exception as ex:
+                    logger.error("Copy file error while setting timestamp for file \"" + dst + "\", exception: " + str(ex))
                     pass
 
                 if highprior == False: # immediate redundant copy vs background copy
@@ -249,11 +258,15 @@ class BucketCopier:
                 else:
                     self.speed_calc = (speed * 0.25) + (self.speed_calc * 0.75)
 
-            except FileNotFoundError as fnfe:
+            except Exception as ex:
                 # check the mount point of the destination file
-                if bucketutils.is_still_mounted(dst) == False:
+                if bucketutils.is_still_mounted(src) == False:
                     self.state = COPIERSTATE_ERROR
-                raise fnfe
+                    self.app.on_copy_error()
+                elif bucketutils.is_still_mounted(dst) == False:
+                    self.state = COPIERSTATE_ERROR
+                    self.app.on_copy_error()
+                raise ex
 
             self.file_totsize = 0
             self.file_remain = 0
@@ -285,11 +298,13 @@ class BucketCopier:
             line = self.priority_queue.get()
             is_highpriority = True
             self.copy_one_file(line, highprior=is_highpriority)
+            # we'll also check the priority_queue when the low priority task list is opened
             if self.interrupted:
                 self.state = COPIERSTATE_CANCELED
                 return
             while self.paused:
                 time.sleep(1)
+            return
 
         if self.state == COPIERSTATE_RESTART:
             self.state = COPIERSTATE_CALC
@@ -315,10 +330,6 @@ class BucketCopier:
             while True:
                 try:
                     time.sleep(0) # thread yield
-                    if self.interrupted:
-                        break
-                    while self.paused:
-                        time.sleep(1)
                     if self.state == COPIERSTATE_RESTART:
                         self.state = COPIERSTATE_CALC
                         return
@@ -330,9 +341,14 @@ class BucketCopier:
                         line = copylistfile.readline()
                         if not line:
                             break
+                        if self.interrupted:
+                            self.state = COPIERSTATE_CANCELED
+                            break
+                        while self.paused:
+                            time.sleep(1)
                     self.copy_one_file(line, highprior=is_highpriority)
                 except Exception as ex1:
-                    logger.error("Copy error while reading cmd list: " + str(ex1))
+                    logger.error("Copy thread error while reading cmd list: " + str(ex1))
                     if os.name == "nt":
                         raise ex1
 
@@ -374,9 +390,20 @@ class BucketCopier:
         if self.priority_queue.empty() == False:
             return True
         else:
-            if self.copy_thread == None:
+            if self.copy_thread is None:
                 self.copy_thread = threading.Thread(target=self.copy_worker, daemon=True)
                 self.copy_thread.start()
         if self.file_remain > 0 and self.file_totsize > 0:
             return True
         return False
+
+    def is_off(self):
+        return self.state == COPIERSTATE_IDLE or self.state == COPIERSTATE_DONE or self.state == COPIERSTATE_CANCELED or self.state == COPIERSTATE_ERROR or self.state == COPIERSTATE_FULL or self.mode == COPIERMODE_NONE
+
+    def user_cancel(self):
+        self.interrupted = True
+        if self.copy_thread is not None:
+            timeout = 0
+            while self.is_off() == False and timeout < 100:
+                time.sleep(1) # thread yield
+                timeout += 1

@@ -3,7 +3,7 @@
 import os, sys, time, datetime, shutil, subprocess, signal, random, math, glob
 import threading, queue, socket
 
-import bucketapp, bucketutils, bucketlogger
+import bucketapp, bucketutils, bucketcopy, bucketlogger
 
 from PIL import Image, ImageOps, ImageDraw, ImageFont, ExifTags
 

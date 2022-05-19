@@ -8,7 +8,7 @@ from pyftpdlib.servers import FTPServer, ThreadedFTPServer
 from pyftpdlib.filesystems import AbstractedFS, FilesystemError
 from pyftpdlib._compat import unicode, u, PY3
 
-import bucketapp, bucketio, bucketutils, bucketlogger
+import bucketapp, bucketio, bucketutils, bucketcopy, bucketlogger
 
 logger = bucketlogger.getLogger()
 logger2 = logging.getLogger('pyftpdlib')
@@ -84,7 +84,7 @@ class BucketFtpHandler(FTPHandler):
         if app is None:
             return
         app.on_nonactivity()
-        app.on_missed_file(file)
+        app.on_missed_file(file, force = True)
         try:
             if os.path.isfile(file):
                 os.remove(file)

@@ -96,9 +96,15 @@ def is_camera_file(path):
     if pathparts[-3] == "DCIM" or pathparts[-2] == "DCIM":
         return True
 
-def is_disk_camera(path):
-    dcim = os.path.join(path, "DCIM")
-    return os.path.isdir(dcim)
+def is_disk_camera(disk):
+    # sorry, this works only with Sony cameras
+    dcim = os.path.join(disk, "DCIM")
+    sonycardind = os.path.join(disk, "SONY", "SONYCARD.IND")
+    avf_info = os.path.join(disk, "AVF_INFO")
+    return os.path.isdir(dcim) and (os.path.isdir(avf_info) or os.path.isfile(sonycardind))
+
+def is_fpath_camera(fpath):
+    return is_disk_camera(find_mount_point(fpath))
 
 def rename_camera_file(path, datestroverride = None):
     app = bucketapp.bucket_app

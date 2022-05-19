@@ -6,7 +6,7 @@ import psutil
 
 from PIL import Image, ImageDraw, ImageFont, ExifTags
 
-import bucketapp, bucketio, bucketftp, bucketlogger, bucketutils
+import bucketapp, bucketio, bucketftp, bucketcopy, bucketlogger, bucketutils
 
 logger = bucketlogger.getLogger()
 
@@ -47,14 +47,14 @@ class BucketMenu:
             items.append(["EJECT DISK", MENUITEM_EJECT])
             if len(self.app.disks) > 1:
                 tail = "[OFF]"
-                if self.app.cloning_enaged == bucketapp.CLONING_MAIN2REDUN:
-                    tail = "[M>R]"
-                elif self.app.cloning_enaged == bucketapp.CLONING_BOTH:
-                    tail = "[M<->R]"
-                elif self.app.cloning_enaged == bucketapp.CLONING_REDUN2MAIN:
-                    tail = "[R>M]"
-                elif self.app.cloning_enaged == bucketapp.CLONING_DONE:
+                if self.app.copier.state == bucketcopy.COPIERSTATE_DONE:
                     tail = "[DONE]"
+                elif self.app.copier.mode == bucketcopy.COPIERMODE_MAIN2REDUN:
+                    tail = "[M>R]"
+                elif self.app.copier.mode == bucketcopy.COPIERMODE_BOTH:
+                    tail = "[M<->R]"
+                elif self.app.copier.mode == bucketcopy.COPIERMODE_REDUN2MAIN:
+                    tail = "[R>M]"
                 items.append(["CLONE DISKS " + tail, MENUITEM_CLONE])
         if len(self.app.session_lost_list) > 0:
             items.append(["LOST FILES", MENUITEM_LOSTFILES])
@@ -166,24 +166,32 @@ class BucketMenu:
                     self.reset_state()
                     self.app.ux_screen = bucketapp.UXSCREEN_MAIN
         elif self.selected_item == MENUITEM_CLONE:
-            if self.app.cloning_enaged == bucketapp.CLONING_OFF or :
-                self.draw_bottom_texts(left="M>R", mid="M<->R", right="R>M")
-                if btn_popped == 1:
-                    self.app.cloning_enaged = bucketapp.CLONING_MAIN2REDUN
+            if self.app.copier.is_off():
+                is_camera = False
+                if bucketutils.is_disk_camera(self.app.disks[1]):
+                    self.draw_bottom_texts(right="CAM>MAIN")
+                    is_camera = True
+                else:
+                    self.draw_bottom_texts(left="M>R", mid="M<->R", right="R>M")
+                if btn_popped == 1 and is_camera == False:
+                    self.app.copier.start(bucketcopy.COPIERMODE_MAIN2REDUN)
                     self.reset_state()
                     self.app.ux_screen = bucketapp.UXSCREEN_MAIN
-                if btn_popped == 2:
-                    self.app.cloning_enaged = bucketapp.CLONING_BOTH
+                if btn_popped == 2 and is_camera == False:
+                    self.app.copier.start(bucketcopy.COPIERMODE_BOTH)
                     self.reset_state()
                     self.app.ux_screen = bucketapp.UXSCREEN_MAIN
                 if btn_popped == 3:
-                    self.app.cloning_enaged = bucketapp.CLONING_REDUN2MAIN
+                    self.app.copier.start(bucketcopy.COPIERMODE_REDUN2MAIN)
                     self.reset_state()
                     self.app.ux_screen = bucketapp.UXSCREEN_MAIN
             else:
                 self.draw_bottom_texts(mid="OFF")
                 if btn_popped == 2:
-                    self.app.cloning_enaged = CLONING_OFF
+                    self.app.hwio.oled_blankimage()
+                    self.draw_bottom_texts(left="STOPPING COPY...")
+                    self.app.copier.user_cancel()
+                    self.app.copier.start(bucketcopy.COPIERMODE_NONE)
                     self.reset_state()
                     self.app.ux_screen = bucketapp.UXSCREEN_MAIN
         elif self.selected_item == MENUITEM_LOSTFILES or self.selected_item == MENUITEM_FTPINFO:
