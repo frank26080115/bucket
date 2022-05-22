@@ -307,7 +307,8 @@ class BucketApp:
         return self.cfg_get_genericstring("ftp_username", "user")
 
     def cfg_get_ftppassword(self):
-        return self.cfg_get_genericstring("ftp_password", "12345")
+        #return self.cfg_get_genericstring("ftp_password", "12345")
+        return bucketutils.get_wifi_password()
 
     def cfg_get_ftpport(self):
         return self.cfg_get_genericint("ftp_port", 2133)
@@ -708,6 +709,7 @@ class BucketApp:
                 disklabel = disklabel.strip(os.path.sep)
                 disklabel = disklabel[disklabel.index(os.path.sep):]
             txtlist.append(str1 + (">" if is_copying else "") + disklabel)
+            txtlist.append(txtlist[-1])
             if self.fsize_avg > 0:
                 left = math.floor(free / self.fsize_avg) # calculate how many images can be saved
                 str3 = ("%d" % (left)) + ("?" if 0 in self.fsize_list else "") # append unsure indicator if required
@@ -843,6 +845,7 @@ def main():
     global bucket_app
     pyftpdlib.log.config_logging()
     hwio = bucketio.BucketIO_Simulator() if os.name == "nt" else bucketio.BucketIO()
+    hwio.hw_init()
     app = BucketApp(hwio = hwio)
     if bucket_app is None:
         bucket_app = app

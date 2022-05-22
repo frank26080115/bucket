@@ -300,7 +300,7 @@ def start_ftp_server(running_app = None):
 
     print("FTP port %d" % port)
 
-    server = ThreadedFTPServer(('192.168.1.79', port), ftp_handler)
+    server = ThreadedFTPServer((bucketutils.get_wifi_ip(), port), ftp_handler)
     if app is not None:
         print("running FTP server with multi-threaded app")
         app.ftp_server = server

@@ -133,10 +133,12 @@ def rename_camera_file_path(path, bucketname, disk, dateoverride = None):
     return npath
 
 def get_wifi_ip():
-    #if os.name == 'nt':
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("8.8.8.8", 80))
-    return str(s.getsockname()[0])
+    if os.name == 'nt':
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        return str(s.getsockname()[0])
+    ipv4 = os.popen('ip addr show wlan0 | grep "\<inet\>" | awk \'{ print $2 }\' | awk -F "/" \'{ print $1 }\'').read().strip()
+    return ipv4
 
 def get_wifi_ssid():
     if os.name != "nt":
@@ -145,6 +147,17 @@ def get_wifi_ssid():
             ssid = ssid.strip()
             if len(ssid.strip()) > 0:
                 return ssid
+        except:
+            pass
+        try:
+            r = os.popen("cat /etc/hostapd/hostapd.conf").read()
+            lines = r.split('\n')
+            for line in lines:
+                li = line.strip()
+                if li.startswith("ssid="):
+                    ssid = li[5:]
+                    if len(ssid) > 0:
+                        return ssid
         except:
             pass
     else:
@@ -160,6 +173,19 @@ def get_wifi_ssid():
     except:
         pass
     return ""
+
+def get_wifi_password():
+    try:
+        r = os.popen("cat /etc/hostapd/hostapd.conf").read()
+        lines = r.split('\n')
+        for line in lines:
+            li = line.strip()
+            if li.startswith("wpa_passphrase="):
+                passphrase = li[15:]
+                if len(passphrase) > 0:
+                    return passphrase
+    except:
+        pass
 
 def get_wifi_clients():
     macs = []

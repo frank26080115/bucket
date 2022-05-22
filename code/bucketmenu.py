@@ -207,6 +207,8 @@ class BucketMenu:
                     self.show_ftp_info()
                 self.app.hwio.oled_show()
                 time.sleep(3)
+                while self.app.hwio.is_btn_held(2):
+                    self.app.hwio.oled_show()
         #self.app.hwio.oled_show()
 
     def draw_bottom_texts(self, left="", mid="", right="", yoffset = 0):
@@ -261,7 +263,7 @@ class BucketMenu:
         txtlist.append(str(self.app.cfg_get_ftpport()))
         txtlist.append("FTP USERNAME:")
         txtlist.append(self.app.cfg_get_ftpusername())
-        txtlist.append("FTP PASSWORD:")
+        txtlist.append("WIFI/FTP PASSWORD:")
         txtlist.append(self.app.cfg_get_ftppassword())
         pad = 1 if os.name == "nt" else 0
         y = 0

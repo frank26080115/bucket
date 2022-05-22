@@ -189,7 +189,8 @@ class BucketIO:
         return self.button_queue.get()
 
     def is_btn_held(self, num):
-        return self.buttons[num].is_held
+        num -= 1
+        return self.buttons[num].is_held or self.buttons[num].is_pressed or self.buttons[num].value != 0
 
     def cpu_highfreq(self):
         cpu_highfreq()
@@ -258,7 +259,7 @@ def adc_to_voltage(x):
     # 6.0 = 5.22 * m + b
 
     vafter += BATT_VOLT_COMPENSATE
-    return vafter
+    return vafter if vafter > 0 else 0
 
 def voltage_to_charge(x):
     x = x / 2 # per cell voltage
