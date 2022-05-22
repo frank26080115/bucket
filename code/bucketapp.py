@@ -7,10 +7,7 @@ import psutil
 from PIL import Image, ImageDraw, ImageFont, ExifTags
 import pyftpdlib.log
 
-import bucketio, bucketmenu, bucketftp, bucketviewer, bucketcopy, bucketlogger
-
 bucket_app = None
-logger = bucketlogger.getLogger()
 
 CONFIG_FILE_NAME    = "bucket_cfg.json"
 LOW_SPACE_THRESH_MB = 200
@@ -31,6 +28,10 @@ UX_LINESPACE = 0
 
 UXSCREEN_MAIN = 0
 UXSCREEN_MENU = 1
+
+import bucketio, bucketmenu, bucketftp, bucketviewer, bucketcopy, bucketlogger, bucketutils
+
+logger = bucketlogger.getLogger()
 
 class BucketApp:
     def __init__(self, hwio = None):
@@ -63,7 +64,7 @@ class BucketApp:
         self.ux_screen       = UXSCREEN_MAIN
         self.ux_menu         = bucketmenu.BucketMenu(self)
 
-        self.thumbnail_queue = Queue.queue()
+        self.thumbnail_queue = queue.Queue()
 
     def reset_stats(self):
         self.session_first_number = None
@@ -88,7 +89,7 @@ class BucketApp:
             partitions.sort(reverse = True, key = disk_sort_func)
             for i in partitions:
                 self.disks.append(i)
-            bucketlogger.reconfig(self)
+            bucketlogger.reconfig()
         else:
             # update the list in a way that preserves the previous order
             # this way, the top disk in the list is still the primary write target
@@ -839,9 +840,12 @@ def disks_unmount(disks):
         disk_unmount_start(i)
 
 def main():
+    global bucket_app
     pyftpdlib.log.config_logging()
     hwio = bucketio.BucketIO_Simulator() if os.name == "nt" else bucketio.BucketIO()
     app = BucketApp(hwio = hwio)
+    if bucket_app is None:
+        bucket_app = app
     bucketftp.start_ftp_server(app)
     while True:
         app.ux_frame()

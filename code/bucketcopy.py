@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 
-import os, sys, time, datetime, shutil, subprocess, signal, random, math, glob
+import os, sys, time, datetime, shutil, subprocess, signal, random, math, glob, queue
 import threading, queue, socket
+
+import bucketapp, bucketutils, bucketlogger
+
+logger = bucketlogger.getLogger()
 
 COPYLIST_FILENAME = "copylist.txt"
 
@@ -34,6 +38,7 @@ restricted_dirs = [
 class BucketCopier:
     def __init__(self, app):
         self.app = app
+        self.priority_queue = queue.Queue()
         self.reset_all()
 
     def start(self, mode):
@@ -151,7 +156,7 @@ class BucketCopier:
                         if srcsize > 0 and (os.path.isfile(destfilepath) == False or (os.path.getsize(destfilepath) <= srcsize // 2 or (self.mode != COPIERMODE_BOTH and os.path.getsize(destfilepath) != srcsize))):
                             # passed overwrite rules
                             # enqueue the copy task into the task list
-                            cmd = srcfile + ";" = destfilepath
+                            cmd = srcfile + ";" + destfilepath
                             with open(copylistfilenpath, "a") as copylistfile:
                                 copylistfile.write("\n" + cmd)
                                 self.total_files += 1
@@ -384,7 +389,7 @@ class BucketCopier:
             return self.state, self.is_busy(), percentage, sizestr, timestr
 
     def is_busy(self):
-        if self.activity_time is not None():
+        if self.activity_time is not None:
             if (time.monotonic() - self.activity_time) < 3:
                 return True
         if self.priority_queue.empty() == False:

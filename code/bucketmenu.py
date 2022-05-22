@@ -18,6 +18,7 @@ MENUITEM_EJECT        = 4
 MENUITEM_CLONE        = 5
 MENUITEM_LOSTFILES    = 6
 MENUITEM_FTPINFO      = 7
+MENUITEM_WIFICLIENTS  = 8
 
 class BucketMenu:
     def __init__(self, app):
@@ -59,6 +60,7 @@ class BucketMenu:
         if len(self.app.session_lost_list) > 0:
             items.append(["LOST FILES", MENUITEM_LOSTFILES])
         items.append(["FTP INFO", MENUITEM_FTPINFO])
+        items.append(["WIFI CLIENTS", MENUITEM_WIFICLIENTS])
 
         # there is a chance that the menu changed while still visible
         # ideally we keep the user's cursor on the same item

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import os, sys, time, datetime, shutil, subprocess, signal, random, math, glob
+import os, sys, time, datetime, shutil, subprocess, signal, random, math, glob, queue
 import threading, queue, socket
 
 import bucketapp, bucketutils, bucketcopy, bucketlogger
@@ -8,22 +8,22 @@ import bucketapp, bucketutils, bucketcopy, bucketlogger
 from PIL import Image, ImageOps, ImageDraw, ImageFont, ExifTags
 
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
-from urlparse import urlparse
+import urllib
 
 logger = bucketlogger.getLogger()
 
-thumb_queue_lowpriority = Queue.queue()
-thumb_queue_highpriority = Queue.queue()
+thumb_queue_lowpriority = queue.Queue()
+thumb_queue_highpriority = queue.Queue()
 thumb_queue_busy = False
 thumb_gen_thread = None
 
-keepcopy_queue = Queue.queue()
+keepcopy_queue = queue.Queue()
 keepcopy_thread = None
 
 class BucketHttpHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         app = bucketapp.bucket_app
-        query = urlparse(self.path).query
+        query = urllib.parse(self.path).query
         query_components = dict(qc.split("=") for qc in query.split("&"))
         if app is not None:
             dir = os.path.join(app.get_root(), app.cfg_get_bucketname())

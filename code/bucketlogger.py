@@ -5,7 +5,7 @@ import bucketapp
 
 LOG_FILE_NAME = "bucket_log.?.log"
 
-logger = logger.getLogger("bucket")
+logger = logging.getLogger("bucket")
 
 def reconfig(lvl = logging.ERROR):
     # every time a main disk is inserted, we need to reconfigure the logger to log into a new file

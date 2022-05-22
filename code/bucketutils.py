@@ -292,4 +292,13 @@ def get_disk_label(path):
                     return res
         return res
     except Exception as ex:
+        if os.name == "nt":
+            import win32api
+            mp = find_mount_point(path)
+            x = win32api.GetVolumeInformation(mp)
+            x = x[0].strip()
+            if len(x) > 0:
+                return x
+            else:
+                return mp
         return None

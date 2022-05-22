@@ -8,6 +8,8 @@ from pyftpdlib.servers import FTPServer, ThreadedFTPServer
 from pyftpdlib.filesystems import AbstractedFS, FilesystemError
 from pyftpdlib._compat import unicode, u, PY3
 
+import logging
+
 import bucketapp, bucketio, bucketutils, bucketcopy, bucketlogger
 
 logger = bucketlogger.getLogger()
@@ -271,8 +273,10 @@ def read_washere_file(path):
         s = f.read().strip()
     return s
 
-def start_ftp_server():
+def start_ftp_server(running_app = None):
     app = bucketapp.bucket_app
+    if app is None and running_app is not None:
+        app = running_app
 
     authorizer = BucketAuthorizer()
     username = "user"
@@ -298,9 +302,11 @@ def start_ftp_server():
 
     server = ThreadedFTPServer(('192.168.1.79', port), ftp_handler)
     if app is not None:
+        print("running FTP server with multi-threaded app")
         app.ftp_server = server
         app.ftp_start()
     else:
+        print("running FTP server with serve_forever")
         server.serve_forever()
 
 def main():
