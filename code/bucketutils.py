@@ -109,7 +109,7 @@ def is_fpath_camera(fpath):
 def rename_camera_file(path, datestroverride = None):
     app = bucketapp.bucket_app
     head, tail = os.path.split(path)
-    prf = app.cfg_get_prefix() if app is not None or "DSC"
+    prf = app.cfg_get_prefix() if app is not None else "DSC"
     # build the new file name with the date code
     s1 = tail[0:len(prf)]
     if datestroverride is None:
@@ -160,6 +160,38 @@ def get_wifi_ssid():
     except:
         pass
     return ""
+
+def get_wifi_clients():
+    macs = []
+    clients = []
+    if os.name == "nt":
+        return clients
+    r = subprocess.run("iw dev wlan0 station dump".split(' '), capture_output=True, text=True).stdout
+    lines = r.split('\n')
+    for line in lines:
+        li = line.lower().strip()
+        if li.startswith("station ") and li.endswith(" (on wlan0)"):
+            sp = li.split(' ')
+            mac = sp[1].upper()
+            if mac not in macs:
+                macs.append(mac)
+    if len(macs) <= 0:
+        return clients
+    r = subprocess.run("arp -a".split(' '), capture_output=True, text=True).stdout
+    lines = r.split('\n')
+    for line in lines:
+        li = line.strip()
+        for mac in macs:
+            if mac in li.upper():
+                res = li[:li.upper().index(" AT " + mac.upper())].strip() + " " + mac
+                res = res.strip()
+                wlan_phrase = ".wlan ("
+                if wlan_phrase in res:
+                    res2 = res[:res.index(wlan_phrase)] + " (" + res[res.index(wlan_phrase) + len(wlan_phrase):]
+                    res = res2
+                if res not in clients:
+                    clients.append(res)
+    return clients
 
 def ext_is_raw(fileext):
     app = bucketapp.bucket_app
