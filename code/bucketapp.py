@@ -35,8 +35,6 @@ logger = bucketlogger.getLogger()
 
 class BucketApp:
     def __init__(self, hwio = None):
-        global bucket_app
-        bucket_app = self
         self.disks = []
         self.cfg = None
         self.ftp_server  = None
@@ -89,7 +87,7 @@ class BucketApp:
             partitions.sort(reverse = True, key = disk_sort_func)
             for i in partitions:
                 self.disks.append(i)
-            bucketlogger.reconfig()
+            bucketlogger.reconfig(bapp = self)
         else:
             # update the list in a way that preserves the previous order
             # this way, the top disk in the list is still the primary write target
@@ -113,7 +111,7 @@ class BucketApp:
                     newlist.append(i)
             self.disks = newlist
             if not found:
-                bucketlogger.reconfig()
+                bucketlogger.reconfig(bapp = self)
 
     def get_root(self):
         self.update_disk_list()
@@ -215,7 +213,7 @@ class BucketApp:
                         hdr = dir[0:dir.index('-')]
                         if hdr.isnumeric() and len(hdr) == 6:
                             self.last_file_date = datetime.datetime.strptime("20" + hdr, "%Y%m%d")
-                            bucketlogger.reconfig()
+                            bucketlogger.reconfig(bapp = self)
 
     def cfg_get_genericstring(self, key, defval):
         result = defval
@@ -413,16 +411,13 @@ class BucketApp:
 
     def on_disk_full(self):
         self.alarm_reason |= ALARMFLAG_DISKFULL
-        self.hwio.buzzer_on()
 
     def on_lost_file(self, forced = False):
         if forced:
             self.alarm_reason |= ALARMFLAG_LOSTFILE
-            self.hwio.buzzer_on()
 
     def on_copy_error(self):
         self.alarm_reason |= ALARMFLAG_COPYERR
-        self.hwio.buzzer_on()
 
     def try_get_time(self):
         # we don't have a valid time because we have no RTC, but we might've gotten a file from the camera
@@ -435,7 +430,7 @@ class BucketApp:
                     if self.has_date is None: # prevent infinite loop from error
                         self.last_file = None
                     else:
-                        bucketlogger.reconfig()
+                        bucketlogger.reconfig(bapp = self)
 
     def generate_next_thumbnail(self):
         if self.thumbnail_queue.empty() == False:
@@ -459,6 +454,13 @@ class BucketApp:
             return
         self.last_frame_time = tnow
         self.ux_frame_cnt += 1
+
+        if self.alarm_reason != 0:
+            x = self.ux_frame_cnt % 5
+            if x == 0 or x == 2:
+                self.hwio.buzzer_on()
+            else:
+                self.hwio.buzzer_off()
 
         if self.ftp_server is not None and self.ftp_thread is None:
             logger.info("starting FTP thread")
@@ -501,7 +503,7 @@ class BucketApp:
                 self.ux_show_lost(y, pad)
                 y += font_height + UX_LINESPACE
 
-            if self.copier.state != bucketcopy.COPIERSTATE_IDLE and self.copier.state != bucketcopy.COPIERSTATE_CANCELED:
+            if self.copier.state != bucketcopy.COPIERSTATE_IDLE and self.copier.state != bucketcopy.COPIERSTATE_CANCELED and self.copier.state != bucketcopy.COPIERSTATE_RESTART:
                 self.ux_show_copystatus(y, pad)
                 y += font_height + UX_LINESPACE
 
@@ -524,11 +526,13 @@ class BucketApp:
                 if txt.startswith("PERCENTBAR "):
                     p = float(txt[txt.index(' ') + 1:].strip())
                     (font_width, font_height) = self.font.getsize(prefix)
+                    font_width = (6 * 6) if font_width < 10 else font_width
                     x = pad + font_width + 1
-                    w = bucketio.OLED_WIDTH - x
+                    w = bucketio.OLED_WIDTH - x - 1
                     wb = w * p / 100
-                    self.hwio.imagedraw.rectangle((x, y, bucketio.OLED_WIDTH, y + font_height), fill=None, outline=255)
-                    self.hwio.imagedraw.rectangle((x, y, wb, y + font_height), fill=255, outline=255)
+                    self.hwio.imagedraw.rectangle((x, y + 2, bucketio.OLED_WIDTH - 1, y + font_height), fill=None, outline=255)
+                    self.hwio.imagedraw.rectangle((x, y + 2, x + wb, y + font_height), fill=255, outline=255)
+                    self.hwio.imagedraw.text((pad, pad+y), prefix, font=self.font, fill=255)
                 else:
                     self.hwio.imagedraw.text((pad, pad+y), prefix + txt, font=self.font, fill=255)
                 return
@@ -562,7 +566,6 @@ class BucketApp:
         if higher_batt < self.batt_lowest:
             if self.batt_lowest >= LOW_BATT_THRESH and higher_batt < LOW_BATT_THRESH:
                 self.alarm_reason |= ALARMFLAG_BATTLOW
-                self.hwio.buzzer_on()
             self.batt_lowest = higher_batt
         str = "BATT: "
         if use_volts:
@@ -636,10 +639,14 @@ class BucketApp:
         elif self.session_last_act is not None:
             tsec = time.monotonic() - self.session_last_act
             if tsec <= 120:
-                txtlist.append("-%d " % (round(tsec)))
+                txtlist.append("-%dsec " % (round(tsec)))
             else:
                 tmin = tsec / 60
-                txtlist.append("-%.1fm " % (tmin))
+                txtlist.append("-%.1fmin " % (tmin))
+
+        clients = bucketutils.get_wifi_clients()
+        txtlist.append("%d clients" % len(clients))
+
         self.ux_show_timesliced_texts(y, pad, hdr, txtlist, 7)
 
     def ux_show_session(self, y, pad):
@@ -765,26 +772,26 @@ class BucketApp:
             txtlist.append(timestr)
             fcnt = self.copier.total_files - self.copier.done_files
             txtlist.append("%d F" % fcnt)
-            self.ux_show_timesliced_texts(y, pad, "COPY: ", txtlist, 5)
+            self.ux_show_timesliced_texts(y, pad, "COPY: ", txtlist, 10)
         elif state == bucketcopy.COPIERSTATE_CALC or state == bucketcopy.COPIERSTATE_RESTART:
             self.hwio.imagedraw.text((pad, pad+y), "COPY STARTING", font=self.font, fill=255)
         elif state == bucketcopy.COPIERSTATE_DONE:
             txtlist = []
             txtlist.append("DONE")
             txtlist.append("%d F" % self.copier.total_files)
-            self.ux_show_timesliced_texts(y, pad, "COPY: ", txtlist, 5)
+            self.ux_show_timesliced_texts(y, pad, "COPY: ", txtlist, 10)
         elif state == bucketcopy.COPIERSTATE_FULL:
             txtlist = []
             txtlist.append("DISK FULL")
             txtlist.append("%.1f%%" % percentage)
             txtlist.append("%d / %d" % (self.copier.done_files, self.copier.total_files))
-            self.ux_show_timesliced_texts(y, pad, "COPY: ", txtlist, 5)
+            self.ux_show_timesliced_texts(y, pad, "COPY: ", txtlist, 10)
         elif state == bucketcopy.COPIERSTATE_ERROR:
             txtlist = []
             txtlist.append("ERROR")
             txtlist.append("%.1f%%" % percentage)
             txtlist.append("%d / %d" % (self.copier.done_files, self.copier.total_files))
-            self.ux_show_timesliced_texts(y, pad, "COPY: ", txtlist, 5)
+            self.ux_show_timesliced_texts(y, pad, "COPY: ", txtlist, 10)
         
 
     def ftp_start(self):
@@ -849,6 +856,7 @@ def main():
     app = BucketApp(hwio = hwio)
     if bucket_app is None:
         bucket_app = app
+    bucketutils.set_running_app(app)
     bucketftp.start_ftp_server(app)
     while True:
         app.ux_frame()

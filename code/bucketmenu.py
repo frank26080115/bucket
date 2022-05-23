@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw, ImageFont, ExifTags
 import bucketapp, bucketio, bucketftp, bucketcopy, bucketlogger, bucketutils
 
 logger = bucketlogger.getLogger()
+bucket_app = None
 
 MENUITEM_BACK         = 0
 MENUITEM_CLEARWARN    = 1
@@ -22,7 +23,9 @@ MENUITEM_WIFICLIENTS  = 8
 
 class BucketMenu:
     def __init__(self, app):
+        global bucket_app
         self.app = app
+        bucket_app = app
         self.reset_state()
 
     def reset_state(self):
@@ -196,7 +199,7 @@ class BucketMenu:
                     self.app.copier.start(bucketcopy.COPIERMODE_NONE)
                     self.reset_state()
                     self.app.ux_screen = bucketapp.UXSCREEN_MAIN
-        elif self.selected_item == MENUITEM_LOSTFILES or self.selected_item == MENUITEM_FTPINFO:
+        elif self.selected_item == MENUITEM_LOSTFILES or self.selected_item == MENUITEM_FTPINFO or self.selected_item == MENUITEM_WIFICLIENTS:
             self.draw_bottom_texts(mid="SHOW")
             if btn_popped == 2 or self.app.hwio.is_btn_held(2):
                 self.timeout_time = time.monotonic()
@@ -205,6 +208,8 @@ class BucketMenu:
                     self.show_lost_files()
                 elif self.selected_item == MENUITEM_FTPINFO:
                     self.show_ftp_info()
+                elif self.selected_item == MENUITEM_WIFICLIENTS:
+                    self.show_wifi_clients()
                 self.app.hwio.oled_show()
                 time.sleep(3)
                 while self.app.hwio.is_btn_held(2):
@@ -270,4 +275,15 @@ class BucketMenu:
         (font_width, font_height) = self.app.font.getsize('X')
         for t in txtlist:
             self.app.hwio.imagedraw.text((pad, pad+y), t, font=self.app.font, fill=255)
+            y += font_height + bucketapp.UX_LINESPACE
+
+    def show_wifi_clients(self):
+        clients = bucketutils.get_wifi_clients()
+        pad = 1 if os.name == "nt" else 0
+        y = 0
+        for c in clients:
+            self.app.hwio.imagedraw.text((pad, pad+y), c, font=self.app.font, fill=255)
+            y += font_height + bucketapp.UX_LINESPACE
+        if len(clients) <= 0:
+            self.app.hwio.imagedraw.text((pad, pad+y), "NONE", font=self.app.font, fill=255)
             y += font_height + bucketapp.UX_LINESPACE

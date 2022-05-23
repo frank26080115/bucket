@@ -15,6 +15,8 @@ import bucketapp, bucketio, bucketutils, bucketcopy, bucketlogger
 logger = bucketlogger.getLogger()
 logger2 = logging.getLogger('pyftpdlib')
 
+bucket_app = None
+
 class BucketFtpHandler(FTPHandler):
     """
     Mostly just event handlers
@@ -27,12 +29,12 @@ class BucketFtpHandler(FTPHandler):
         logger2.info("BucketFtpHandler - on_connect")
 
     def on_disconnect(self):
+        global bucket_app
         """Called when connection is closed."""
-        app = bucketapp.bucket_app
         logger2.info("BucketFtpHandler - on_disconnect")
-        if app is None:
+        if bucket_app is None:
             return
-        app.on_nonactivity()
+        bucket_app.on_nonactivity()
 
     def on_login(self, username):
         """Called on user login."""
@@ -62,12 +64,12 @@ class BucketFtpHandler(FTPHandler):
         """Called every time a file has been successfully received.
         "file" is the absolute name of the file just being received.
         """
-        app = bucketapp.bucket_app
+        global bucket_app
         logger2.info("BucketFtpHandler - on_file_received: " + file)
-        if app is None:
+        if bucket_app is None:
             return
-        app.on_nonactivity()
-        app.on_file_received(file)
+        bucket_app.on_nonactivity()
+        bucket_app.on_file_received(file)
 
     def on_incomplete_file_sent(self, file):
         """Called every time a file has not been entirely sent.
@@ -81,12 +83,12 @@ class BucketFtpHandler(FTPHandler):
         (e.g. ABOR during transfer or client disconnected).
         "file" is the absolute name of that file.
         """
-        app = bucketapp.bucket_app
+        bucket_app
         logger2.info("BucketFtpHandler - on_incomplete_file_received: " + file)
-        if app is None:
+        if bucket_app is None:
             return
-        app.on_nonactivity()
-        app.on_missed_file(file, force = True)
+        bucket_app.on_nonactivity()
+        bucket_app.on_missed_file(file, force = True)
         try:
             if os.path.isfile(file):
                 os.remove(file)
@@ -98,11 +100,11 @@ class BucketFtpHandler(FTPHandler):
 class BucketFtpFilesystem(AbstractedFS):
 
     def ftp2fs(self, ftppath):
-        app = bucketapp.bucket_app
+        global bucket_app
         x = AbstractedFS.ftp2fs(self, ftppath)
         bucket_root = None
-        if app is not None:
-            bucket_root = app.get_root()
+        if bucket_app is not None:
+            bucket_root = bucket_app.get_root()
         if bucket_root is None:
             if os.name != "nt":
                 return "/tmp"
@@ -113,11 +115,11 @@ class BucketFtpFilesystem(AbstractedFS):
         return x
 
     def fs2ftp(self, fspath):
+        global bucket_app
         assert isinstance(fspath, unicode), fspath
-        app = bucketapp.bucket_app
         bucket_root = None
-        if app is not None:
-            bucket_root = app.get_root()
+        if bucket_app is not None:
+            bucket_root = bucket_app.get_root()
         bucket_root = bucket_app.get_root()
         if bucket_root is None:
             # uhhhh no place to put the file, the file write will fail if disk space is not available
@@ -138,14 +140,14 @@ class BucketFtpFilesystem(AbstractedFS):
         return p
 
     def open(self, filename, mode):
+        global bucket_app
         assert isinstance(filename, unicode), filename
-        app = bucketapp.bucket_app
-        if app is not None:
-            app.cpu_highfreq()
-        if "w" in mode and (app is None or app.still_has_space() == False):
+        if bucket_app is not None:
+            bucket_app.cpu_highfreq()
+        if "w" in mode and (bucket_app is None or bucket_app.still_has_space() == False):
             raise FilesystemError("Out of disk space")
         if "w" in mode:
-            app.on_before_open(filename)
+            bucket_app.on_before_open(filename)
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         return open(filename, mode)
 
@@ -227,24 +229,24 @@ class BucketDtpHandler(ThrottledDTPHandler):
         return False
 
     def recv(self, buffer_size):
-        app = bucketapp.bucket_app
+        global bucket_app
         chunk = DTPHandler.recv(self, buffer_size)
-        if app is not None:
+        if bucket_app is not None:
             bucket_app.on_activity()
         return chunk
 
     def send(self, data):
-        app = bucketapp.bucket_app
+        global bucket_app
         num_sent = DTPHandler.send(self, data)
-        if app is not None:
+        if bucket_app is not None:
             bucket_app.on_activity()
         return num_sent
 
 class BucketAuthorizer(DummyAuthorizer):
     def get_home_dir(self, username):
-        app = bucketapp.bucket_app
-        if app is not None:
-            return app.get_root()
+        global bucket_app
+        if bucket_app is not None:
+            return bucket_app.get_root()
         else:
             return DummyAuthorizer.get_home_dir(self, username)
 
@@ -274,16 +276,16 @@ def read_washere_file(path):
     return s
 
 def start_ftp_server(running_app = None):
-    app = bucketapp.bucket_app
-    if app is None and running_app is not None:
-        app = running_app
+    global bucket_app
+    if bucket_app is None and running_app is not None:
+        bucket_app = running_app
 
     authorizer = BucketAuthorizer()
     username = "user"
     password = "12345"
-    if app is not None:
-        username = app.cfg_get_ftpusername()
-        password = app.cfg_get_ftppassword()
+    if bucket_app is not None:
+        username = bucket_app.cfg_get_ftpusername()
+        password = bucket_app.cfg_get_ftppassword()
     authorizer.add_user(username, password, os.getcwd(), perm='elradfmwMT')
     #authorizer.add_anonymous(os.getcwd())
 
@@ -295,16 +297,16 @@ def start_ftp_server(running_app = None):
     ftp_handler.abstracted_fs = BucketFtpFilesystem
 
     port = 2133
-    if app is not None:
-        port = app.cfg_get_ftpport()
+    if bucket_app is not None:
+        port = bucket_app.cfg_get_ftpport()
 
     print("FTP port %d" % port)
 
-    server = ThreadedFTPServer((bucketutils.get_wifi_ip(), port), ftp_handler)
-    if app is not None:
+    server = ThreadedFTPServer(('192.168.1.79', port), ftp_handler)
+    if bucket_app is not None:
         print("running FTP server with multi-threaded app")
-        app.ftp_server = server
-        app.ftp_start()
+        bucket_app.ftp_server = server
+        bucket_app.ftp_start()
     else:
         print("running FTP server with serve_forever")
         server.serve_forever()

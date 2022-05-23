@@ -20,13 +20,15 @@ thumb_gen_thread = None
 keepcopy_queue = queue.Queue()
 keepcopy_thread = None
 
+bucket_app = None
+
 class BucketHttpHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        app = bucketapp.bucket_app
+        global bucket_app
         query = urllib.parse(self.path).query
         query_components = dict(qc.split("=") for qc in query.split("&"))
-        if app is not None:
-            dir = os.path.join(app.get_root(), app.cfg_get_bucketname())
+        if bucket_app is not None:
+            dir = os.path.join(bucket_app.get_root(), bucket_app.cfg_get_bucketname())
         else:
             dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test")
         subfolders = [ f.path for f in os.scandir(dir) if f.is_dir() ]
@@ -199,9 +201,9 @@ def get_kept_name(fpath, dirname = "keep"):
     return os.path.join(head, dirname, tail)
 
 def keep_file(vpath, dirword = "keep", canrecurse = True, fromhttp = True):
-    app = bucketapp.bucket_app
-    if app is not None:
-        dir = os.path.join(app.get_root(), app.cfg_get_bucketname())
+    global bucket_app
+    if bucket_app is not None:
+        dir = os.path.join(bucket_app.get_root(), bucket_app.cfg_get_bucketname())
     else:
         dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test")
     if fromhttp:
@@ -218,13 +220,13 @@ def keep_file(vpath, dirword = "keep", canrecurse = True, fromhttp = True):
     elif os.path.isfile(fpath2) and os.path.isfile(kpath) == True and os.getsize(kpath) <= 0:
         os.remove(kpath)
         os.rename(fpath2, kpath)
-    if app is not None:
-        if len(app.disks) > 1:
-            for disk in app.disks:
-                if disk == app.disks[0]:
+    if bucket_app is not None:
+        if len(bucket_app.disks) > 1:
+            for disk in bucket_app.disks:
+                if disk == bucket_app.disks[0]:
                     continue
                 try:
-                    dir = os.path.join(disk, app.cfg_get_bucketname())
+                    dir = os.path.join(disk, bucket_app.cfg_get_bucketname())
                     if fromhttp:
                         fpath2 = os.path.join(dir, fpath)
                     else:
@@ -286,7 +288,7 @@ def keepcopy_worker():
         if os.name == "nt":
             raise ex1
 
-def generate_thumbnail(filepath, skip_if_exists=True):
+def generate_thumbnail(filepath, skip_if_exists=True, allow_recurse=True):
     thumbpath   = get_thumbname(filepath)
     previewpath = get_thumbname(filepath, filetail="preview")
     zoomedpath  = get_thumbname(filepath, filetail="zoomed")
@@ -295,15 +297,16 @@ def generate_thumbnail(filepath, skip_if_exists=True):
         if skip_if_exists == False or os.path.isfile(previewpath) == False:
             extract_jpg_preview(filepath)
         jpgpath = filepath[0:-4] + ".JPG"
-        if os.path.isfile(jpgpath) and skip_if_exists:
-            generate_thumbnail(jpgpath, skip_if_exists=skip_if_exists)
+        if os.path.isfile(jpgpath) and skip_if_exists and allow_recurse:
+            generate_thumbnail(jpgpath, skip_if_exists=skip_if_exists, allow_recurse=False)
         return
 
     if filepath.lower().endswith(".jpg"):
         if skip_if_exists == False or os.path.isfile(zoomedpath) == False:
             generate_zoomnail(filepath, skip_if_exists=skip_if_exists)
         arwpath = filepath[0:-4] + ".ARW"
-        generate_thumbnail(arwpath, skip_if_exists=skip_if_exists)
+        if allow_recurse:
+            generate_thumbnail(arwpath, skip_if_exists=skip_if_exists, allow_recurse=False)
         if skip_if_exists == False or (os.path.isfile(thumbpath) == False and os.path.isfile(previewpath) == False):
             # only do this image rescaling if the raw file did not provide a faster embedded preview
             img = Image.open(filepath)
@@ -340,10 +343,10 @@ def thumbgen_worker():
     global thumb_queue_highpriority
     global thumb_queue_busy
     global thumb_gen_thread
+    global bucket_app
     try:
         while True:
             time.sleep(0) # thread yield
-            app = bucketapp.bucket_app
             try:
                 was_high = False
                 x = None
@@ -355,8 +358,8 @@ def thumbgen_worker():
                     x = thumb_queue_lowpriority.get()
 
                 if x is not None:
-                    if app is not None:
-                        app.cpu_highfreq()
+                    if bucket_app is not None:
+                        bucket_app.cpu_highfreq()
                     generate_thumbnail(x)
                     move_if_rated(x)
                     if was_high and thumb_queue_highpriority.empty():
@@ -422,7 +425,7 @@ def generate_zoomnail(filepath, skip_if_exists=True):
         sz = (sz[1], sz[0])
     sz2 = (int(round(sz[0]/2)), int(round(sz[1]/2)))
     pt = (int(round(width * focus_points[2] / focus_points[0])), int(round(height * focus_points[3] / focus_points[1])))
-    box = (pt[0] - sz2[0], pt[1] - sz2[1], pt[0] + sz2[0], pt[1] + sz2[1])
+    box = [pt[0] - sz2[0], pt[1] - sz2[1], pt[0] + sz2[0], pt[1] + sz2[1]]
     while box[0] < 0 and box[2] < (width - 1):
         box[0] += 1
         box[2] += 1
@@ -464,7 +467,7 @@ def get_image_focus_point(exiftxt):
 def get_image_rating(exiftxt):
     lines = exiftxt.split('\n')
     for line in lines:
-        if line.lower().startswith("Focus Location".lower()):
+        if line.lower().startswith("Rating".lower()):
             parts = line.split(' ')
             if len(parts) >= 3:
                 ratingstr = parts[-1]

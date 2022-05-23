@@ -4,6 +4,14 @@ import os, sys, time, datetime, shutil, subprocess, signal, random, math, glob
 import threading, queue, socket
 import psutil
 
+import bucketapp
+
+bucket_app = None
+
+def set_running_app(app):
+    global bucket_app
+    bucket_app = app
+
 def get_size_string(x):
     remMB = math.ceil(x / 1024 / 1024)
     remGB = x / 1024 / 1024 / 1024
@@ -41,22 +49,25 @@ def find_mount_point(path):
         return "/"
 
 def is_still_mounted(path):
-    app = bucketapp.bucket_app
+    global bucket_app
     mntpt = find_mount_point(path)
     if mntpt is None or len(mntpt) <= 1:
         return False
-    elif app is not None:
-        app.update_disk_list()
-        if mntpt not in app.disks or os.path.isdir(mntpt) == False:
+    elif bucket_app is not None:
+        bucket_app.update_disk_list()
+        if mntpt not in bucket_app.disks or os.path.isdir(mntpt) == False:
             return False
     return True
 
 def path_is_image_file(path):
-    app = bucketapp.bucket_app
+    global bucket_app
+    if bucket_app is None:
+        print("bucket_app is none")
+        quit()
     x = os.path.basename(path).lower()
 
     # check for the file name prefix, on Sony cameras, default is "DSC"
-    prf = app.cfg_get_prefix().lower()
+    prf = bucket_app.cfg_get_prefix().lower()
     #if x.startswith(prf) == False:
     #    return False, "", "", "", ""
     # I disabled the exact match check for the header
@@ -67,7 +78,7 @@ def path_is_image_file(path):
         return False, "", "", "", ""
 
     # check if it's an image file by examining its file name extension
-    extlist = app.cfg_get_extensions()
+    extlist = bucket_app.cfg_get_extensions()
     usedext = None
     for ext in extlist:
         if x.endswith("." + ext.lower()):
@@ -107,13 +118,13 @@ def is_fpath_camera(fpath):
     return is_disk_camera(find_mount_point(fpath))
 
 def rename_camera_file(path, datestroverride = None):
-    app = bucketapp.bucket_app
+    global bucket_app
     head, tail = os.path.split(path)
-    prf = app.cfg_get_prefix() if app is not None else "DSC"
+    prf = bucket_app.cfg_get_prefix() if bucket_app is not None else "DSC"
     # build the new file name with the date code
     s1 = tail[0:len(prf)]
     if datestroverride is None:
-        s2 = app.get_date_str()
+        s2 = bucket_app.get_date_str()
     else:
         s2 = datestroverride
     s3 = tail[len(prf):]
@@ -186,6 +197,8 @@ def get_wifi_password():
                     return passphrase
     except:
         pass
+    if os.name == "nt":
+        return "1234567890"
 
 def get_wifi_clients():
     macs = []
@@ -220,10 +233,10 @@ def get_wifi_clients():
     return clients
 
 def ext_is_raw(fileext):
-    app = bucketapp.bucket_app
+    global bucket_app
     rawexts = ["arw"]
-    if app is not None:
-        rawexts = app.cfg_get_extensions(key="raw_extensions", defval=["arw"]) # if raw file is not enabled on camera, then the cfg file should change this to jpg
+    if bucket_app is not None:
+        rawexts = bucket_app.cfg_get_extensions(key="raw_extensions", defval=["arw"]) # if raw file is not enabled on camera, then the cfg file should change this to jpg
     for re in rawexts:
         if re.lower() == fileext.lower():
             return True

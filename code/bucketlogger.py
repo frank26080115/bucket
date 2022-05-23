@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import sys, os
 import logging, pyftpdlib.log
 import bucketapp
 
@@ -7,12 +8,16 @@ LOG_FILE_NAME = "bucket_log.?.log"
 
 logger = logging.getLogger("bucket")
 
-def reconfig(lvl = logging.ERROR):
+bucket_app = None
+
+def reconfig(bapp = None, lvl = logging.ERROR):
     # every time a main disk is inserted, we need to reconfigure the logger to log into a new file
     # plus, if the time is obtained, we can add the date to the log file's name
 
     global logger
-    app = bucketapp.bucket_app
+    global bucket_app
+    if bapp is not None and bucket_app is None:
+        bucket_app = bapp
 
     logger.handlers = []
     handler = logging.StreamHandler()
@@ -22,10 +27,10 @@ def reconfig(lvl = logging.ERROR):
     logger.addHandler(handler)
     logger.setLevel(lvl)
 
-    if app is None or len(app.disks) <= 0:
+    if bucket_app is None or len(bucket_app.disks) <= 0:
         return
 
-    logpath = os.path.join(app.disks[0], app.cfg_get_bucketname(), LOG_FILE_NAME.replace("?", app.get_date_str()))
+    logpath = os.path.join(bucket_app.disks[0], bucket_app.cfg_get_bucketname(), LOG_FILE_NAME.replace("?", bucket_app.get_date_str()))
     os.makedirs(os.path.dirname(logpath), exist_ok=True)
     fhandler = logging.FileHandler(logpath)
     logger.addHandler(fhandler)

@@ -206,6 +206,9 @@ class BucketIO_Simulator:
         self.imagedraw = ImageDraw.Draw(self.image)
         self.oled_blankimage()
 
+    def hw_init(self):
+        pass
+
     def oled_blankimage(self):
         self.imagedraw.rectangle((0, 0, OLED_WIDTH + 2, OLED_HEIGHT + 2), outline=0, fill=0)
 

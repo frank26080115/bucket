@@ -32,7 +32,9 @@ restricted_names = [
 ]
 
 restricted_dirs = [
+    "delete",
     "AVF_INFO",
+    "System Volume Information",
 ]
 
 class BucketCopier:
@@ -55,6 +57,8 @@ class BucketCopier:
         self.mode = mode
         if self.state != COPIERSTATE_IDLE and self.mode != COPIERMODE_NONE:
             self.state = COPIERSTATE_RESTART
+        elif self.mode != COPIERMODE_NONE:
+            self.state = COPIERSTATE_CALC
         if self.copy_thread is None and (self.mode != COPIERMODE_NONE or self.priority_queue.empty() == False):
             self.copy_thread = threading.Thread(target=self.copy_worker, daemon=True)
             self.copy_thread.start()
@@ -99,7 +103,6 @@ class BucketCopier:
 
             for origroot, origdirs, origfiles in os.walk(origdisk, topdown=True): # for all files
                 for srcfile in origfiles: # for all files
-
                     # thread management
                     time.sleep(0)
                     while self.paused:
@@ -119,12 +122,8 @@ class BucketCopier:
                         if srcfile.lower().endswith(unacceptable.lower()):
                             acceptable = False
                             break
-                        if (os.path.sep + "delete" + os.path.sep).lower() in srcfile.lower():
-                            # do not copy files that the user has marked to delete
-                            acceptable = False
-                            break
                     for unacceptable in restricted_dirs:
-                        if (os.path.sep + unacceptable + os.path.sep) in srcfile:
+                        if (os.path.sep + unacceptable + os.path.sep).lower() in origroot.lower() or origroot.lower().endswith(os.path.sep + unacceptable.lower()):
                             acceptable = False
                             break
                     if acceptable == False:
@@ -140,15 +139,17 @@ class BucketCopier:
                             continue
 
                         origfilepath = os.path.abspath(os.path.join(origroot, srcfile))
-                        srcsize = os.path.getsize(srcfile)
-                        pathtail = origfilepath[len(origdisk) + 1:]
+                        srcsize = os.path.getsize(origfilepath)
+                        pathtail = origfilepath[len(origdisk):]
+                        is_cam_file = False
                         # construct destination file path with new mount point
                         if bucketutils.is_camera_file(origfilepath) and bucketutils.is_disk_camera(origdisk):
                             # the file path looks like a camera file structure
                             dtstroverride = None
                             if self.app.has_date is None: # we haven't gotten a time from FTP transfer, but since this is a SD card, the timestamp can be used
-                                dtstroverride = datetime.fromtimestamp(os.path.getmtime(origfilepath)).strftime("%y%m%d")
+                                dtstroverride = datetime.date.fromtimestamp(os.path.getmtime(origfilepath)).strftime("%y%m%d")
                             destfilepath = bucketutils.rename_camera_file_path(origfilepath, self.app.cfg_get_bucketname(), destdisk, dateoverride = dtstroverride)
+                            is_cam_file = True
                         else:
                             # looks like a generic file, or the file has already been renamed
                             destfilepath = os.path.join(destdisk, pathtail)
@@ -156,7 +157,9 @@ class BucketCopier:
                         if srcsize > 0 and (os.path.isfile(destfilepath) == False or (os.path.getsize(destfilepath) <= srcsize // 2 or (self.mode != COPIERMODE_BOTH and os.path.getsize(destfilepath) != srcsize))):
                             # passed overwrite rules
                             # enqueue the copy task into the task list
-                            cmd = srcfile + ";" + destfilepath
+                            cmd = origfilepath + ";" + destfilepath
+                            if is_cam_file:
+                                cmd += ";cam"
                             with open(copylistfilenpath, "a") as copylistfile:
                                 copylistfile.write("\n" + cmd)
                                 self.total_files += 1
@@ -196,6 +199,7 @@ class BucketCopier:
                 return
             src = cmdparts[0]
             dst = cmdparts[1]
+            is_cam_file = True if len(cmdparts) > 2 and cmdparts[2] == "cam" else False
 
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             fsize = os.path.getsize(src)
@@ -253,15 +257,18 @@ class BucketCopier:
 
                 if highprior == False: # immediate redundant copy vs background copy
                     self.done_files += 1
+                    if is_cam_file:
+                        self.app.thumbnail_queue.put(dst)
 
                 # calculate transfer speed
                 time_per_file = time.monotonic() - start_time
-                speed = self.file_totsize / time_per_file
-                # use a low-pass-filter on the speed figure
-                if self.speed_calc is None:
-                    self.speed_calc = speed
-                else:
-                    self.speed_calc = (speed * 0.25) + (self.speed_calc * 0.75)
+                if time_per_file > 0:
+                    speed = self.file_totsize / time_per_file
+                    # use a low-pass-filter on the speed figure
+                    if self.speed_calc is None:
+                        self.speed_calc = speed
+                    else:
+                        self.speed_calc = (speed * 0.25) + (self.speed_calc * 0.75)
 
             except Exception as ex:
                 # check the mount point of the destination file
@@ -365,7 +372,7 @@ class BucketCopier:
             time.sleep(1)
 
     def get_status(self):
-        if self.state == COPIERSTATE_NONE or self.state == COPIERSTATE_CALC:
+        if self.state == COPIERSTATE_IDLE or self.state == COPIERSTATE_CALC or self.state == COPIERSTATE_RESTART:
             return self.state, self.is_busy(), 0, "0MB", "00:00"
         elif self.state == COPIERSTATE_DONE:
             return self.state, self.is_busy(), 100, "0MB", "00:00"
@@ -383,10 +390,12 @@ class BucketCopier:
                 timeelapsed = time.monotonic() - self.start_time
                 if timeelapsed > 0:
                     speed = self.done_size / timeelapsed
-            if speed is not None:
+            if speed is not None and speed > 0:
                 tremain = bremain / speed
                 timestr = bucketutils.get_time_string(round(tremain))
             return self.state, self.is_busy(), percentage, sizestr, timestr
+        else:
+            return self.state, self.is_busy(), 0, "0MB", "00:00"
 
     def is_busy(self):
         if self.activity_time is not None:
