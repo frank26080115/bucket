@@ -10,9 +10,9 @@ The problem I'm trying to solve is a really stupid first-world-problem... While 
 
 So the strategy is to wirelessly transfer the files into a cheaper-slower-but-bigger storage device, 1 or 2 TB sized USB disks, simultaneously as the camera is shooting. The slower speed should be fine because the transfers will happen during the down-time. USB disks at this size typically cost just a bit over $100 (genuine, authentic, non-scam ones) and require USB-3.0 ports.
 
-Once the photos are in the bigger storage device, I can clear the expensive-and-smaller memory cards without going back to a hotel.
+Once the photos are in the bigger storage device, I can clear the expensive-and-smaller memory cards without going back to a hotel, using in-camera quick-reformat.
 
-This project needs to be done by late June of 2022, my next vacation.
+This project needs to be done by late June of 2022, my next vacation. (I hope this explains some very weird decisions I've made)
 
 Features
 ----
