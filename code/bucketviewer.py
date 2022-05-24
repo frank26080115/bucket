@@ -8,7 +8,7 @@ import bucketapp, bucketutils, bucketcopy, bucketlogger
 from PIL import Image, ImageOps, ImageDraw, ImageFont, ExifTags
 
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
-import urllib
+import urllib, urllib.parse
 
 logger = bucketlogger.getLogger()
 
@@ -17,8 +17,17 @@ bucket_app = None
 class BucketHttpHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         global bucket_app
-        query = urllib.parse(self.path).query
-        query_components = dict(qc.split("=") for qc in query.split("&"))
+
+        query = urllib.parse.urlparse(self.path).query
+        query_components = dict()
+        try:
+            query_components = dict(qc.split("=") for qc in query.split("&"))
+        except Exception as ex:
+            if "2 is required" in str(ex):
+                pass
+            else:
+                logger.error("HTTP query_components error: " + str(ex))
+
         if bucket_app is not None:
             self.ftmgr = bucket_app.ftmgr
             dir = os.path.join(bucket_app.get_root(), bucket_app.cfg_get_bucketname())
@@ -37,7 +46,10 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
             self.end_headers()
             if os.path.isfile(get_webfilepath("index.htm")):
                 with open(get_webfilepath("index.htm"), "r") as f:
-                    self.wfile.write(bytes(f.read(), "utf-8"))
+                    x = f.read()
+                    if "<!--test-->" in x:
+                        x = x[:x.index("<!--test-->")]
+                    self.wfile.write(bytes(x, "utf-8"))
             else:
                 self.wfile.write(bytes("<html><head><title>Bucket Home</title></head><body>\r\n", "utf-8"))
             # serve up a simple clickable list of folders
@@ -58,20 +70,24 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
 
                 def writeout(str, hfile, wfile):
                     hfile.write(str)
-                    wfile.write(bytes(str), "utf-8")
+                    wfile.write(bytes(str, "utf-8"))
 
                 with open(os.path.join(dir, dd) + ".htm", "w") as htmlfile:
 
                     if os.path.isfile(get_webfilepath("dirpage.htm")):
                         with open(get_webfilepath("dirpage.htm"), "r") as f:
-                            writeout(f.read())
+                            x = f.read()
+                            if "<!--test-->" in x:
+                                x = x[:x.index("<!--test-->")]
+                            writeout(x, htmlfile, self.wfile)
+                            writeout("<div id=\"title_holder\" style=\"display: none;\">" + dd + "</div>\r\n", htmlfile, self.wfile)
                     else:
-                        writeout("<html><head><title>Bucket " + dd + "</title></head><body>\r\n<h1>" + d + "</h1><br />")
+                        writeout("<html><head><title>Bucket " + dd + "</title></head><body>\r\n<h1>" + d + "</h1><br />", htmlfile, self.wfile)
 
                     # find all of the files, including ones already marked for keeping or deleting
                     files = [ f.path for f in os.scandir(d) if f.is_file() ]
-                    files_kept = [] if os.path.isdir(os.path.join(d, "keep"  )) else [ f.path for f in os.scandir(d) if f.is_file(os.path.join(d, "keep"  )) ]
-                    files_del  = [] if os.path.isdir(os.path.join(d, "delete")) else [ f.path for f in os.scandir(d) if f.is_file(os.path.join(d, "delete")) ]
+                    files_kept = [] if not os.path.isdir(os.path.join(d, "keep"  )) else [ f.path for f in os.scandir(os.path.join(d, "keep"  ))]
+                    files_del  = [] if not os.path.isdir(os.path.join(d, "delete")) else [ f.path for f in os.scandir(os.path.join(d, "delete"))]
                     allfiles = files + files_kept + files_del
 
                     # sorting by name will keep them all in order
@@ -80,13 +96,13 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
                     allfiles.sort(key=sort_basename)
 
                     if len(allfiles) <= 0:
-                        writeout("no files in " + dd + "<br />\r\n")
+                        writeout("no files in " + dd + "<br />\r\n", htmlfile, self.wfile)
                     else:
-                        writeout("<div id=\"file_list\" style=\"display: none;\">\r\n")
+                        writeout("<div id=\"file_list\" style=\"display: none;\">\r\n", htmlfile, self.wfile)
 
                         # we'll need the thumbnails pretty soon
                         for f in files:
-                            self.ftmgr.enqueue_thumb_generation(i, important=False)
+                            self.ftmgr.enqueue_thumb_generation(f, important=False)
 
                         # output a list of the files, the javascript can deal with it later
                         for f in allfiles:
@@ -95,25 +111,25 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
                             p = dd + "/" + ff
                             if fe.lower() == ".jpg" or fe.lower() == ".arw":
                                 classes = " imgkept" if f in files_kept else (" imgdeleted" if f in files_del else "")
-                                writeout("<a href=\"" + p + "\" class=\"imgurl" + classes + "\">" + p + "</a><br />\r\n")
-                        writeout("</div>")
-                    writeout("</body></html>")
+                                writeout("<a href=\"" + p + "\" class=\"imgurl" + classes + "\">" + p + "</a><br />\r\n", htmlfile, self.wfile)
+                        writeout("</div><div id=\"main_content\"></div>", htmlfile, self.wfile)
+                    writeout("</body></html>", htmlfile, self.wfile)
                 return
 
-        if self.path.startswith("/") and (self.path.endswith(".css") or self.path.endswith(".js")):
+        if self.path.startswith("/") and (self.path.lower().endswith(".css") or self.path.lower().endswith(".js")):
             p = get_webfilepath("." + self.path)
             if os.path.isfile(p) == False:
-                self.send_response(404)
+                self.send_error(404)
                 return
             self.send_response(200)
-            ct = "text/css" if self.path.endswith(".css") else "text/javascript"
+            ct = "text/css" if self.path.lower().endswith(".css") else "text/javascript"
             self.send_header("Content-type", ct)
             self.end_headers()
             with open(p, "r") as f:
                 self.wfile.write(bytes(f.read(), "utf-8"))
             return
 
-        if self.path.startswith("/") and (self.path.endswith(".jpg") or self.path.endswith(".jpeg")):
+        if self.path.startswith("/") and (self.path.lower().endswith(".jpg") or self.path.lower().endswith(".jpeg")) and (self.path.startswith("/keepfile") == False and self.path.startswith("/deletefile") == False):
             p = os.path.join(dir, self.path[1:].replace("/", os.path.sep))
 
             if "thumb" in p or ".zoomed." in p or ".preview." in p:
@@ -132,18 +148,10 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
                     p = p.replace(".thumb.", ".preview.")
 
             if os.path.isfile(p) == False:
-                # maybe it's in a keep or delete folder? multi clients might be out of sync with the file system
-                head, tail = os.path.split(p)
-                p2 = os.path.join(head, "keep", tail)
-                if os.path.isfile(p2):
-                    p = p2
-                else:
-                    p2 = os.path.join(head, "delete", tail)
-                    if os.path.isfile(p2):
-                        p = p2
-                    else:
-                        self.send_error(404)
-                        return
+                p = find_existing_image_file(p)
+                if os.path.isfile(p) == False:
+                    self.send_error(404)
+                    return
 
             # we are ready to serve the JPG now
             self.send_response(200)
@@ -155,35 +163,39 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
             with open(p, "rb") as fin:
                 while rem > 0:
                     rlen = min(1024 * 100, rem)
-                    bytes = fin.read(rlen)
-                    if not bytes or len(bytes) <= 0:
+                    barr = fin.read(rlen)
+                    if not barr or len(barr) <= 0:
                         break
-                    self.wfile.write(bytes)
+                    self.wfile.write(barr)
                     rem -= rlen
-                    if len(bytes) < rlen:
+                    if len(barr) < rlen:
                         break
             return
 
         # handle command
         if self.path.startswith("/keepfile"):
-            keepname = query_components["file"]
+            keepname = urllib.parse.unquote(query_components["file"])
             keep_file(keepname)
+            self.send_response(200)
+            self.end_headers()
             return
 
         # handle command
         if self.path.startswith("/deletefile"):
-            deletename = query_components["file"]
+            deletename = urllib.parse.unquote(query_components["file"])
             keep_file(deletename, dirword="delete")
+            self.send_response(200)
+            self.end_headers()
             return
 
 def get_webfilepath(fname):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), fname)
 
 def get_server(port = 8000):
-    return ThreadingHTTPServer(('', port), BucketHttpHandler)
+    return ThreadingHTTPServer((bucketutils.get_wifi_ip(), port), BucketHttpHandler)
 
 def get_original_names(thumbpath):
-    pnodots = p[0:p.index('.')]
+    pnodots = thumbpath[0:thumbpath.index('.')]
     head, tail = os.path.split(pnodots)
     if head.endswith("thumbs"):
         head = head[0:-7]
@@ -201,7 +213,6 @@ def keep_file(vpath, dirword = "keep", canrecurse = True, fromhttp = True):
     global bucket_app
     if bucket_app is not None:
         dir = os.path.join(bucket_app.get_root(), bucket_app.cfg_get_bucketname())
-        self.ftmgr = bucket_app.ftmgr
     else:
         dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test")
     if fromhttp:
@@ -213,6 +224,10 @@ def keep_file(vpath, dirword = "keep", canrecurse = True, fromhttp = True):
 
     kpath = get_kept_name(fpath2, dirname = dirword)
     os.makedirs(os.path.dirname(kpath), exist_ok=True)
+
+    if os.path.isfile(fpath2) == False:
+        fpath2 = find_existing_image_file(fpath2)
+
     if os.path.isfile(fpath2) and os.path.isfile(kpath) == False:
         os.rename(fpath2, kpath)
     elif os.path.isfile(fpath2) and os.path.isfile(kpath) == True and os.getsize(kpath) <= 0:
@@ -250,6 +265,36 @@ def keep_file(vpath, dirword = "keep", canrecurse = True, fromhttp = True):
             keep_file(vpath.replace(".JPG", ".ARW").replace(".jpg", ".arw"), dirword = dirword, canrecurse = False, fromhttp = fromhttp)
         elif vpath.lower().endswith(".arw"):
             keep_file(vpath.replace(".ARW", ".JPG").replace(".arw", ".jpg"), dirword = dirword, canrecurse = False, fromhttp = fromhttp)
+
+def find_existing_image_file(fpath):
+    kstr = os.path.sep + "keep" + os.path.sep
+    dstr = os.path.sep + "delete" + os.path.sep
+    if kstr in fpath:
+        fpath3 = fpath.replace(kstr, os.path.sep)
+        if os.path.isfile(fpath3):
+            fpath = fpath3
+        else:
+            fpath3 = fpath.replace(kstr, dstr)
+            if os.path.isfile(fpath3):
+                fpath = fpath3
+    elif dstr in fpath:
+        fpath3 = fpath.replace(dstr, os.path.sep)
+        if os.path.isfile(fpath3):
+            fpath = fpath3
+        else:
+            fpath3 = fpath.replace(dstr, kstr)
+            if os.path.isfile(fpath3):
+                fpath = fpath3
+    else:
+        head, tail = os.path.split(fpath)
+        fpath3 = os.path.join(head, "keep", tail)
+        if os.path.isfile(fpath3):
+            fpath = fpath3
+        else:
+            fpath3 = os.path.join(head, "delete", tail)
+            if os.path.isfile(fpath3):
+                fpath = fpath3
+    return fpath
 
 class BucketWebFeatureManager:
     def __init__(self, app = None):
@@ -417,7 +462,8 @@ def generate_zoomnail(filepath, skip_if_exists=True):
     exif = get_image_exif(filepath)
     focus_points = get_image_focus_point(exif)
     if focus_points is None:
-        return
+        # fake this to center of image, in case focus points are missing
+        focus_points = [30, 20, 15, 10]
     img = Image.open(filepath)
     try:
         img = ImageOps.exif_transpose(img)

@@ -900,6 +900,8 @@ def main():
     bucketutils.set_running_app(app)
     bucketviewer.set_running_app(app)
     bucketftp.start_ftp_server(app)
+    app.http_server = bucketviewer.get_server(8000)
+    app.http_start()
     while True:
         app.ux_frame()
     return 0

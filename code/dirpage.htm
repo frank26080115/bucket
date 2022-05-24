@@ -1,0 +1,149 @@
+<html><head><title>Bucket Home</title>
+<script type="text/javascript" src="jquery.min.js"></script>
+<!--<script type="text/javascript" src="simple-lightbox.jquery.min.js"></script>-->
+<!--<link href='simple-lightbox.min.css' rel='stylesheet' type='text/css'>-->
+<link href='style.css' rel='stylesheet' type='text/css'>
+<script type="text/javascript">
+
+document.addEventListener("DOMContentLoaded", function() {
+    console.log("hello");
+    var str = $("div#title_holder").first().text();
+    $("title").first().html("Bucket " + str);
+    $("h1#header_text").first().html("Bucket " + str);
+
+    var allLinks = $("#file_list a.imgurl");
+    var allJpegs = [];
+    var alreadyAdded = [];
+    allLinks.each(function(idx) {
+        var x = this.innerHTML;
+        if (x.endsWith(".JPG")) {
+            allJpegs.push(x);
+        }
+    });
+    allLinks.each(function(idx) {
+        var x = this.innerHTML;
+        if (x.endsWith(".ARW"))
+        {
+            x = x.slice(0, -4) + ".JPG";
+        }
+        if (alreadyAdded.includes(x) == false)
+        {
+            alreadyAdded.push(x);
+            var fldset_id = x.slice(0, -4).replace("/", "_");
+            var thumbnail = x.replace("/", "/thumbs/").slice(0, -4) + ".preview.JPG";
+            var zoomnail = x.replace("/", "/thumbs/").slice(0, -4) + ".zoomed.JPG";
+            var link_txt = "<div class=\"imgbox imgbox_thumbnail\"><a href=\"" + x + "\" target=\"_blank\" class=\"imgclick\">" + "<img data-src=\"" + thumbnail + "\" class=\"lazy thumbnail\"/></a></div>";
+            if (allJpegs.includes(x)) {
+                link_txt += "<hr /><div class=\"imgbox imgbox_zoomnail\"><a href=\"" + zoomnail + "\" target=\"_blank\"><img data-src=\"" + zoomnail + "\" class=\"lazy zoomnail\"/></a></div>";
+            }
+            link_txt += "</a>";
+
+            var fldset = "<fieldset id=\"" + fldset_id + "\" class=\"imgfield imgfield_normal\"><legend>" + x.slice(0, -4).replace("/", "&nbsp;/&nbsp;") + "</legend>";
+
+            if (this.classList.contains("imgkept")) {
+                fldset = fldset.replace("imgfield_normal", "imgfield_kept");
+            }
+            else if (this.classList.contains("imgdeleted")) {
+                fldset = fldset.replace("imgfield_normal", "imgfield_deleted");
+            }
+            else {
+                
+            }
+
+            var btns = "<hr /><div class=\"btnbox\"><button class=\"btn_keep\" onclick=\"keep_img('" + fldset_id + "')\">KEEP</button>&nbsp;&nbsp;&nbsp;&nbsp;<button class=\"btn_delete\" onclick=\"delete_img('" + fldset_id + "')\">DELETE</button></div>";
+
+            var ih = fldset + link_txt + btns + "</fieldset><hr />\r\n";
+            document.getElementById("main_content").innerHTML += ih;
+        }
+    });
+
+    lazyloading_init();
+});
+
+function lazyloading_init() {
+  var lazyloadImages = document.querySelectorAll("img.lazy");
+  var lazyloadThrottleTimeout;
+
+  function lazyload () {
+    if (lazyloadThrottleTimeout) {
+      clearTimeout(lazyloadThrottleTimeout);
+    }
+
+    lazyloadThrottleTimeout = setTimeout(function() {
+        var scrollTop = window.pageYOffset;
+        lazyloadImages.forEach(function(img) {
+            if(img.offsetTop < (window.innerHeight + scrollTop)) {
+              img.src = img.dataset.src;
+              img.classList.remove('lazy');
+            }
+        });
+        if(lazyloadImages.length == 0) { 
+          document.removeEventListener("scroll", lazyload);
+          window.removeEventListener("resize", lazyload);
+          window.removeEventListener("orientationChange", lazyload);
+        }
+    }, 20);
+  }
+
+  document.addEventListener("scroll", lazyload);
+  window.addEventListener("resize", lazyload);
+  window.addEventListener("orientationChange", lazyload);
+  lazyload();
+}
+
+function keepdel_img(id, keep_or_delete) {
+    var aurl = "/" + keep_or_delete + "file?file=" + encodeURIComponent(id.replace("_", "/") + ".JPG");
+    $("#" + id).addClass("imgfield_normal").removeClass("imgfield_deleted").removeClass("imgfield_kept");
+    var jqxhr = $.get( aurl )
+      .done(function() {
+        console.log( "ajax success " + aurl );
+        if (keep_or_delete == "keep") {
+            $("#" + id).addClass("imgfield_kept").removeClass("imgfield_deleted");
+        }
+        else if (keep_or_delete == "delete") {
+            $("#" + id).addClass("imgfield_deleted").removeClass("imgfield_kept");
+        }
+      })
+      .fail(function() {
+        console.log( "ajax failed " + aurl );
+      })
+      .always(function() {
+        console.log( "ajax complete " + aurl );
+      });
+}
+
+function keep_img(id) {
+    keepdel_img(id, "keep");
+}
+
+function delete_img(id) {
+    keepdel_img(id, "delete");
+}
+
+</script>
+
+</head><body><h1 id="header_text">Bucket</h1>
+<!--test-->
+
+<div id="title_holder" style="display: none;">220523-10020523</div>
+
+<div id="file_list" style="display: none;">
+<a href="220523-10020523/DSC22052306569.ARW" class="imgurl imgkept">220523-10020523/DSC22052306569.ARW</a><br />
+<a href="220523-10020523/DSC22052306569.JPG" class="imgurl imgkept">220523-10020523/DSC22052306569.JPG</a><br />
+<a href="220523-10020523/DSC22052306570.ARW" class="imgurl imgkept">220523-10020523/DSC22052306570.ARW</a><br />
+<a href="220523-10020523/DSC22052306570.JPG" class="imgurl imgkept">220523-10020523/DSC22052306570.JPG</a><br />
+<a href="220523-10020523/DSC22052306571.ARW" class="imgurl imgdeleted">220523-10020523/DSC22052306571.ARW</a><br />
+<a href="220523-10020523/DSC22052306571.JPG" class="imgurl imgdeleted">220523-10020523/DSC22052306571.JPG</a><br />
+<a href="220523-10020523/DSC22052306572.ARW" class="imgurl imgdeleted">220523-10020523/DSC22052306572.ARW</a><br />
+<a href="220523-10020523/DSC22052306572.JPG" class="imgurl imgdeleted">220523-10020523/DSC22052306572.JPG</a><br />
+<a href="220523-10020523/DSC22052306573.ARW" class="imgurl">220523-10020523/DSC22052306573.ARW</a><br />
+<a href="220523-10020523/DSC22052306573.JPG" class="imgurl">220523-10020523/DSC22052306573.JPG</a><br />
+<a href="220523-10020523/DSC22052306574.ARW" class="imgurl">220523-10020523/DSC22052306574.ARW</a><br />
+<a href="220523-10020523/DSC22052306574.JPG" class="imgurl">220523-10020523/DSC22052306574.JPG</a><br />
+<a href="220523-10020523/DSC22052306575.ARW" class="imgurl">220523-10020523/DSC22052306575.ARW</a><br />
+</div>
+
+<div id="main_content"></div>
+
+</body>
+</html>

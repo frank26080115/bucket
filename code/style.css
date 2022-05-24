@@ -1,0 +1,35 @@
+body {
+  color: white;
+  background-color: black;
+}
+
+.imgbox {
+    display: grid;
+    /* height: 100%; */
+}
+
+.thumbnail, .zoomnail {
+    max-width: 100%;
+    max-height: 100vh;
+    margin: auto;
+}
+
+.imgfield_kept {
+  border-color: #0F0;
+  border-style: solid;
+}
+
+.imgfield_deleted {
+  border-color: #F00;
+  border-style: solid;
+}
+
+.btn_keep {
+  border-color: #00F;
+  border-style: solid;
+}
+
+.btn_delete {
+  border-color: #F00;
+  border-style: solid;
+}

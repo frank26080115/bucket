@@ -214,7 +214,8 @@ class BucketIO_Simulator:
 
     def oled_show(self):
         npimg = numpy.array(self.image.convert('RGB'))
-        cv2.imshow("img", npimg)
+        npimgx2 = cv2.resize(npimg, ((OLED_WIDTH + 2) * 3, (OLED_HEIGHT + 2) * 3), interpolation = cv2.INTER_NEAREST)
+        cv2.imshow("bucket", npimgx2)
         k = cv2.waitKey(1)
         if k == ord('1'):
             self.button_queue.put(1)
