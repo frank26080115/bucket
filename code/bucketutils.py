@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 
-import os, sys, time, datetime, shutil, subprocess, signal, random, math, glob
+import os, sys, time, datetime, shutil, signal, random, math, glob
 import threading, queue, socket
 import psutil
 
-import bucketapp
+from PIL import Image, ImageDraw, ImageFont, ExifTags
+
+import bucketapp, bucketlogger
+
+logger = bucketlogger.getLogger()
 
 bucket_app = None
 
@@ -148,20 +152,20 @@ def get_wifi_ip():
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         return str(s.getsockname()[0])
-    ipv4 = os.popen('ip addr show wlan0 | grep "\<inet\>" | awk \'{ print $2 }\' | awk -F "/" \'{ print $1 }\'').read().strip()
+    ipv4 = run_cmdline_read('ip addr show wlan0 | grep "\<inet\>" | awk \'{ print $2 }\' | awk -F "/" \'{ print $1 }\'')
     return ipv4
 
 def get_wifi_ssid():
     if os.name != "nt":
         try:
-            ssid = os.popen("sudo iwgetid -r").read()
+            ssid = run_cmdline_read("sudo iwgetid -r")
             ssid = ssid.strip()
             if len(ssid.strip()) > 0:
                 return ssid
         except:
             pass
         try:
-            r = os.popen("cat /etc/hostapd/hostapd.conf").read()
+            r = run_cmdline_read("cat /etc/hostapd/hostapd.conf")
             lines = r.split('\n')
             for line in lines:
                 li = line.strip()
@@ -174,7 +178,7 @@ def get_wifi_ssid():
     else:
         return "Test SSID"
     try:
-        r = subprocess.run(["netsh", "wlan", "show", "network"], capture_output=True, text=True).stdout
+        r = run_cmdline_read("netsh wlan show network")
         ls = r.split("\n")
         ssids = [k for k in ls if 'SSID' in k]
         for ssid in ssids:
@@ -187,7 +191,7 @@ def get_wifi_ssid():
 
 def get_wifi_password():
     try:
-        r = os.popen("cat /etc/hostapd/hostapd.conf").read()
+        r = run_cmdline_read("cat /etc/hostapd/hostapd.conf")
         lines = r.split('\n')
         for line in lines:
             li = line.strip()
@@ -205,7 +209,7 @@ def get_wifi_clients():
     clients = []
     if os.name == "nt":
         return clients
-    r = subprocess.run("iw dev wlan0 station dump".split(' '), capture_output=True, text=True).stdout
+    r = run_cmdline_read("iw dev wlan0 station dump")
     lines = r.split('\n')
     for line in lines:
         li = line.lower().strip()
@@ -216,7 +220,7 @@ def get_wifi_clients():
                 macs.append(mac)
     if len(macs) <= 0:
         return clients
-    r = subprocess.run("arp -a".split(' '), capture_output=True, text=True).stdout
+    r = run_cmdline_read("arp -a")
     lines = r.split('\n')
     for line in lines:
         li = line.strip()
@@ -318,9 +322,11 @@ def get_disk_stats(path):
 
 def get_disk_label(path):
     try:
+        if os.name == "nt":
+            return get_disk_label_windows(path)
         mp = find_mount_point(path)
         res = mp
-        lsblk = subprocess.run(["lsblk", "--output", "MOUNTPOINT,LABEL"], capture_output=True, text=True).stdout
+        lsblk = run_cmdline_read("lsblk --output MOUNTPOINT,LABEL")
         lines = lsblk.split('\n')
         for li in lines:
             limp = li[0:li.index(' ')]
@@ -332,12 +338,23 @@ def get_disk_label(path):
         return res
     except Exception as ex:
         if os.name == "nt":
-            import win32api
-            mp = find_mount_point(path)
-            x = win32api.GetVolumeInformation(mp)
-            x = x[0].strip()
-            if len(x) > 0:
-                return x
-            else:
-                return mp
+            return get_disk_label_windows(path)
         return None
+
+def get_disk_label_windows(path):
+    import win32api
+    mp = find_mount_point(path)
+    x = win32api.GetVolumeInformation(mp)
+    x = x[0].strip()
+    if len(x) > 0:
+        return x
+    else:
+        return mp
+
+def run_cmdline_read(x):
+    s = ""
+    with os.popen(x) as p:
+        s = p.read()
+    if "is not recognized as an internal or external command" in s:
+        raise Exception("ERROR: command \"%\" does not exist" % x)
+    return s

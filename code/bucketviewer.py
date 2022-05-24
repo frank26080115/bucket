@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import os, sys, time, datetime, shutil, subprocess, signal, random, math, glob, queue
+import os, sys, time, datetime, shutil, signal, random, math, glob, queue
 import threading, queue, socket
 
 import bucketapp, bucketutils, bucketcopy, bucketlogger
@@ -12,14 +12,6 @@ import urllib
 
 logger = bucketlogger.getLogger()
 
-thumb_queue_lowpriority = queue.Queue()
-thumb_queue_highpriority = queue.Queue()
-thumb_queue_busy = False
-thumb_gen_thread = None
-
-keepcopy_queue = queue.Queue()
-keepcopy_thread = None
-
 bucket_app = None
 
 class BucketHttpHandler(BaseHTTPRequestHandler):
@@ -28,9 +20,14 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
         query = urllib.parse(self.path).query
         query_components = dict(qc.split("=") for qc in query.split("&"))
         if bucket_app is not None:
+            self.ftmgr = bucket_app.ftmgr
             dir = os.path.join(bucket_app.get_root(), bucket_app.cfg_get_bucketname())
         else:
             dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test")
+
+        if not hasattr(self, 'ftmgr'):
+            self.ftmgr = BucketWebFeatureManager()
+
         subfolders = [ f.path for f in os.scandir(dir) if f.is_dir() ]
         subfolders.sort(reverse=True)
         if self.path == "/" or self.path == "/index" or self.path == "/index.htm" or self.path == "/index.html":
@@ -89,7 +86,7 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
 
                         # we'll need the thumbnails pretty soon
                         for f in files:
-                            enqueue_thumb_generation(i, important=False)
+                            self.ftmgr.enqueue_thumb_generation(i, important=False)
 
                         # output a list of the files, the javascript can deal with it later
                         for f in allfiles:
@@ -124,8 +121,8 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
                 # we need the thumbnails immediately, generate them with high priority now
                 # if they exist already, this will almost immediately finish
                 for i in orignames:
-                    enqueue_thumb_generation(i, important=True)
-                thumbgen_wait()
+                    self.ftmgr.enqueue_thumb_generation(i, important=True)
+                self.ftmgr.thumbgen_wait()
 
             if (os.path.sep + "thumbs" + os.path.sep) in p and os.path.isfile(p) == False:
                 # file not there might mean the type is wrong, so swap the type
@@ -204,6 +201,7 @@ def keep_file(vpath, dirword = "keep", canrecurse = True, fromhttp = True):
     global bucket_app
     if bucket_app is not None:
         dir = os.path.join(bucket_app.get_root(), bucket_app.cfg_get_bucketname())
+        self.ftmgr = bucket_app.ftmgr
     else:
         dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test")
     if fromhttp:
@@ -242,7 +240,7 @@ def keep_file(vpath, dirword = "keep", canrecurse = True, fromhttp = True):
                         # there's no available file on the redundant disk to simply rename
                         # so we will do a full copy instead, from one disk to another
                         # this is slow so we do it in another thread
-                        enqueue_keepcopy(fpath2, kpath)
+                        bucket_app.ftmgr.enqueue_keepcopy(fpath2, kpath)
                 except Exception as ex2:
                     logger.error("Error in keep_file for another drive(\"" + disk + "\", \"" + vpath + "\"): " + str(ex2))
                     if os.name == "nt":
@@ -253,40 +251,127 @@ def keep_file(vpath, dirword = "keep", canrecurse = True, fromhttp = True):
         elif vpath.lower().endswith(".arw"):
             keep_file(vpath.replace(".ARW", ".JPG").replace(".arw", ".jpg"), dirword = dirword, canrecurse = False, fromhttp = fromhttp)
 
-def enqueue_keepcopy(src, dest):
-    keepcopy_queue.put(src + ";" + dest)
-    if keepcopy_thread is None:
-        keepcopy_thread = threading.Thread(target=keepcopy_worker, daemon=True)
-        keepcopy_thread.start()
+class BucketWebFeatureManager:
+    def __init__(self, app = None):
+        global bucket_app
+        if app is None and bucket_app is not None:
+            app = bucket_app
+        self.app = app
+        self.keepcopy_thread = None
+        self.keepcopy_queue = queue.Queue()
+        self.thumb_queue_lowpriority = queue.Queue()
+        self.thumb_queue_highpriority = queue.Queue()
+        self.thumb_queue_busy = False
+        self.thumb_gen_thread = None
+        self.engaged = True
 
-def keepcopy_worker():
-    try:
-        while True:
-            try:
-                if keepcopy_queue.empty() == False:
-                    x = keepcopy_queue.get()
-                    pts = x.split(';')
-                    if len(pts) != 2:
-                        continue
-                    src = pts[0].strip()
-                    dst = pts[1].strip()
-                    if os.path.isfile(src) == False:
-                        continue
-                    os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    shutil.copyfile(src, dst)
-                else:
-                    time.sleep(1)
-                    break
-            except Exception as ex2:
-                logger.error("Keep-copy thread inner exception: " + str(ex2))
-                if os.name == "nt":
-                    raise ex2
-        keepcopy_thread = None
-    except Exception as ex1:
-        logger.error("Keep-copy thread outer exception: " + str(ex1))
-        keepcopy_thread = None
-        if os.name == "nt":
-            raise ex1
+    def enqueue_keepcopy(self, src, dest):
+        if not self.engaged:
+            return
+        self.keepcopy_queue.put(src + ";" + dest)
+        if self.keepcopy_thread is None:
+            self.keepcopy_thread = threading.Thread(target=self.keepcopy_worker, daemon=True)
+            self.keepcopy_thread.start()
+
+    def keepcopy_worker(self):
+        try:
+            while True:
+                try:
+                    if self.keepcopy_queue.empty() == False:
+                        x = self.keepcopy_queue.get()
+                        pts = x.split(';')
+                        if len(pts) != 2:
+                            continue
+                        src = pts[0].strip()
+                        dst = pts[1].strip()
+                        if os.path.isfile(src) == False:
+                            continue
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copyfile(src, dst)
+                    else:
+                        time.sleep(1)
+                        break
+                except Exception as ex2:
+                    logger.error("Keep-copy thread inner exception: " + str(ex2))
+                    if os.name == "nt":
+                        raise ex2
+            self.keepcopy_thread = None
+        except Exception as ex1:
+            logger.error("Keep-copy thread outer exception: " + str(ex1))
+            self.keepcopy_thread = None
+            if os.name == "nt":
+                raise ex1
+
+    def enqueue_thumb_generation(self, filepath, important=False):
+        if not self.engaged:
+            return
+        if important:
+            self.thumb_queue_highpriority.put(filepath)
+            self.thumb_queue_busy = True
+        else:
+            self.thumb_queue_lowpriority.put(filepath)
+        if self.thumb_gen_thread is None:
+            self.thumb_gen_thread = threading.Thread(target=self.thumbgen_worker, daemon=True)
+            self.thumb_gen_thread.start()
+
+    def thumbgen_worker(self):
+        try:
+            while True:
+                time.sleep(0) # thread yield
+                try:
+                    was_high = False
+                    x = None
+                    if self.thumb_queue_highpriority.empty() == False:
+                        x = self.thumb_queue_highpriority.get()
+                        was_high = True
+                        self.thumb_queue_busy = True
+                    elif self.thumb_queue_lowpriority.empty() == False:
+                        x = self.thumb_queue_lowpriority.get()
+
+                    if x is not None:
+                        if self.app is not None:
+                            self.app.cpu_highfreq()
+                        generate_thumbnail(x)
+                        move_if_rated(x)
+                        if was_high and self.thumb_queue_highpriority.empty():
+                            self.thumb_queue_busy = False
+                        time.sleep(0)
+                    else:
+                        time.sleep(1)
+
+                    if self.thumb_queue_lowpriority.empty() and self.thumb_queue_highpriority.empty():
+                        break
+                except Exception as ex2:
+                    logger.error("Thumb generation thread inner exception: " + str(ex2))
+                    if os.name == "nt":
+                        raise ex2
+            self.thumb_gen_thread = None
+            self.thumb_queue_busy = False
+        except Exception as ex1:
+            logger.error("Thumb generation thread outer exception: " + str(ex1))
+            self.thumb_gen_thread = None
+            self.thumb_queue_busy = False
+            if os.name == "nt":
+                raise ex1
+
+    def thumbgen_wait(self, t = 0.1):
+        if self.thumb_gen_thread is None and self.thumb_queue_highpriority.empty() == False:
+            self.enqueue_thumb_generation(self.thumb_queue_highpriority.get(), important=True)
+        while self.thumb_queue_busy:
+            time.sleep(t)
+
+    def thumbgen_clear(self):
+        if not self.engaged:
+            return []
+        remainder = []
+        while self.thumb_queue_lowpriority.empty() == False:
+            remainder.append(self.thumb_queue_lowpriority.get())
+        return remainder
+
+    def thumbgen_is_busy(self):
+        if not self.engaged:
+            return False
+        return self.thumb_queue_busy
 
 def generate_thumbnail(filepath, skip_if_exists=True, allow_recurse=True):
     thumbpath   = get_thumbname(filepath)
@@ -323,85 +408,6 @@ def move_if_rated(filepath):
     rating = get_image_rating(exif)
     if rating > 0:
         keep_file(filepath, fromhttp = False)
-
-def enqueue_thumb_generation(filepath, important=False):
-    global thumb_queue_lowpriority
-    global thumb_queue_highpriority
-    global thumb_queue_busy
-    global thumb_gen_thread
-    if important:
-        thumb_queue_highpriority.put(filepath)
-        thumb_queue_busy = True
-    else:
-        thumb_queue_lowpriority.put(filepath)
-    if thumb_gen_thread is None:
-        thumb_gen_thread = threading.Thread(target=thumbgen_worker, daemon=True)
-        thumb_gen_thread.start()
-
-def thumbgen_worker():
-    global thumb_queue_lowpriority
-    global thumb_queue_highpriority
-    global thumb_queue_busy
-    global thumb_gen_thread
-    global bucket_app
-    try:
-        while True:
-            time.sleep(0) # thread yield
-            try:
-                was_high = False
-                x = None
-                if thumb_queue_highpriority.empty() == False:
-                    x = thumb_queue_highpriority.get()
-                    was_high = True
-                    thumb_queue_busy = True
-                elif thumb_queue_lowpriority.empty() == False:
-                    x = thumb_queue_lowpriority.get()
-
-                if x is not None:
-                    if bucket_app is not None:
-                        bucket_app.cpu_highfreq()
-                    generate_thumbnail(x)
-                    move_if_rated(x)
-                    if was_high and thumb_queue_highpriority.empty():
-                        thumb_queue_busy = False
-                    time.sleep(0)
-                else:
-                    time.sleep(1)
-
-                if thumb_queue_lowpriority.empty() and thumb_queue_highpriority.empty():
-                    break
-            except Exception as ex2:
-                logger.error("Thumb generation thread inner exception: " + str(ex2))
-                if os.name == "nt":
-                    raise ex2
-        thumb_gen_thread = None
-        thumb_queue_busy = False
-    except Exception as ex1:
-        logger.error("Thumb generation thread outer exception: " + str(ex1))
-        thumb_gen_thread = None
-        thumb_queue_busy = False
-        if os.name == "nt":
-            raise ex1
-
-def thumbgen_wait(t = 0.1):
-    global thumb_queue_highpriority
-    global thumb_queue_busy
-    global thumb_gen_thread
-    if thumb_gen_thread is None and thumb_queue_highpriority.empty() == False:
-        enqueue_thumb_generation(thumb_queue_highpriority.get(), important=True)
-    while thumb_queue_busy:
-        time.sleep(t)
-
-def thumbgen_clear():
-    global thumb_queue_lowpriority
-    remainder = []
-    while thumb_queue_lowpriority.empty() == False:
-        remainder.append(thumb_queue_lowpriority.get())
-    return remainder
-
-def thumbgen_is_busy():
-    global thumb_queue_busy
-    return thumb_queue_busy
 
 def generate_zoomnail(filepath, skip_if_exists=True):
     zoomedpath = get_thumbname(filepath, filetail="zoomed")
@@ -478,7 +484,7 @@ def get_image_rating(exiftxt):
 def extract_jpg_preview(filepath):
     # use exiftool to extract embedded preview out of raw file
     # this should be faster than using PIL to resize a full JPG
-    subprocess.run([find_exiftool(), "-b", filepath, "-PreviewImage", "-w", ".pv.jpg"], capture_output=True, text=True).stdout
+    bucketutils.run_cmdline_read(find_exiftool() + " -b " + filepath + " -PreviewImage -w .pv.jpg")
     pvpath = filepath[0:-4] + ".pv.jpg"
     if os.path.isfile(pvpath) == False:
         return None
@@ -489,7 +495,7 @@ def extract_jpg_preview(filepath):
 
 def get_image_exif(filepath):
     # this will just spit out a huge chunk of text from exiftool
-    return subprocess.run([find_exiftool(), filepath], capture_output=True, text=True).stdout
+    return bucketutils.run_cmdline_read(find_exiftool() + " " + filepath)
 
 def find_exiftool():
     g = glob.glob("*ExifTool*/exiftool", recursive=True)
@@ -503,6 +509,10 @@ def find_exiftool():
     tarname = g[0]
     os.system("tar -xvf " + tarname)
     return find_exiftool()
+
+def set_running_app(app):
+    global bucket_app
+    bucket_app = app
 
 def main():
     config_logging()

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import os, sys, time, datetime, shutil, subprocess, signal, random, math
+import os, sys, time, datetime, shutil, signal, random, math
 import threading, queue, socket
 import psutil
 
@@ -137,7 +137,7 @@ class BucketMenu:
                 self.app.hwio.oled_show()
                 time.sleep(1)
                 if os.name != "nt":
-                    os.popen("sudo halt")
+                    bucketutils.run_cmdline_read("sudo shutdown -h now")
                     while True:
                         time.sleep(1)
                 else:
@@ -148,7 +148,7 @@ class BucketMenu:
                 self.app.hwio.oled_show()
                 time.sleep(1)
                 if os.name != "nt":
-                    os.popen("sudo reboot")
+                    bucketutils.run_cmdline_read("sudo reboot")
                     while True:
                         time.sleep(1)
                 else:

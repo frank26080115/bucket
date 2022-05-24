@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import os, sys, time, datetime, shutil, subprocess, signal, random, math, glob, queue
+import os, sys, time, datetime, shutil, signal, random, math, glob, queue
 import threading, queue, socket
 
 import bucketapp, bucketutils, bucketlogger
@@ -417,7 +417,7 @@ class BucketCopier:
     def user_cancel(self):
         self.interrupted = True
         if self.copy_thread is not None:
-            timeout = 0
-            while self.is_off() == False and timeout < 100:
+            timeout = 100
+            while self.is_off() == False and timeout > 0:
                 time.sleep(1) # thread yield
-                timeout += 1
+                timeout -= 1

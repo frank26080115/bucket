@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import sys, os, time, subprocess, queue, glob
+import sys, os, time, queue, glob
 
 is_embedded = True
 
@@ -294,7 +294,7 @@ def has_rtc():
     x = os.system("hwclock -rv >/dev/null")
     if x == 0:
         return True
-    x = subprocess.run(["hwclock", "-rv"], capture_output=True)
+    x = bucketutils.run_cmdline_read("hwclock -rv")
     x = str(x).lower()
     if "using the rtc interface to the clock" in x:
         return True
@@ -314,7 +314,7 @@ def cpu_get_maxminfreq(word):
     minfreq = 999999999999
     g = glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_" + word + "_freq", recursive=True)
     for cpu in g:
-        str = subprocess.run(["cat", cpu], capture_output=True, text=True).stdout
+        str = bucketutils.run_cmdline_read("cat " + cpu)
         str = str.strip() if str is not None else ""
         if str.isnumeric():
             x = int(str)

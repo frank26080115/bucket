@@ -50,6 +50,7 @@ class BucketApp:
         self.start_monotonic_time = time.monotonic()
         self.session_last_act     = None
         self.session_last_nonact  = None
+        self.session_last_5       = []
         self.alarm_reason = 0
         self.batt_lowest  = 100
         self.cpu_freq_high = False
@@ -63,6 +64,7 @@ class BucketApp:
         self.ux_menu         = bucketmenu.BucketMenu(self)
 
         self.thumbnail_queue = queue.Queue()
+        self.ftmgr = bucketviewer.BucketWebFeatureManager()
 
     def reset_stats(self):
         self.session_first_number = None
@@ -173,7 +175,7 @@ class BucketApp:
         busy = False
         if self.session_last_act is not None and (time.monotonic() - self.session_last_act) < 2:
             busy = True
-        elif self.copier.is_busy() or bucketviewer.thumbgen_is_busy():
+        elif self.copier.is_busy() or self.ftmgr.thumbgen_is_busy():
             busy = True
         if busy == False:
             self.cpu_lowfreq()
@@ -330,7 +332,12 @@ class BucketApp:
 
         isimg, filename, filedatecode, filenumber, fileext = bucketutils.path_is_image_file(file)
         israw = bucketutils.ext_is_raw(fileext) # ideally we only count statistics for raw files, otherwise this code can lose a raw file and not notify the user when the corresponding jpg file exists
-        fnum = int(filenumber)
+        donotcount = False
+        if "_" in filenumber:
+            donotcount = True
+            fnum = int(filenumber.replace("_", ""))
+        else:
+            fnum = int(filenumber)
 
         # use consecutive identical numbers as an indicator that the camera is in raw+jpg mode
         if self.session_last_number is not None:
@@ -357,26 +364,50 @@ class BucketApp:
                 self.session_first_number = fnum
             if self.session_last_number is not None:
                 # check if we skipped any file numbers, accounting for roll-over
-                fnum2 = fnum + 100000
-                snum2 = self.session_last_number + 100000
-                diff = (fnum2 - snum2) % 100000
-                if diff >= 2 and (self.session_last_number == 9999 or self.session_last_number == 99999): # rollover scenario
-                    diff -= 1
+                if fnum >= self.session_last_number:
+                    diff = fnum - self.session_last_number
+                else:
+                    if fnum == 0 or fnum == 1:
+                        diff = 1
+                    elif fnum == (self.session_last_number - 1) or  fnum == (self.session_last_number - 2) or  fnum == (self.session_last_number - 3):
+                        diff = 0
+                    else:
+                        fnum2 = fnum + 10000
+                        diff = (fnum2 - self.session_last_number) % 10000
+
                 if diff > 0: # difference = 1 is good, it means we counted up 1
                     diff -= 1
-                self.session_lost_cnt += diff
-                if diff > 0: # if we do lose a file, raise the alarm
-                    self.on_lost_file()
-                    i = 0
-                    while i < diff:
-                        lnum = fnum - i - 1
-                        if lnum <= 0:
-                            lnum += 10000
-                        self.session_lost_list.append(lnum)
-            self.session_last_number = fnum # update this after the delta check
+                if diff >= 5000:
+                    donotcount = True
+                if donotcount == False:
+                    if diff > 0: # if we do lose a file, raise the alarm
+                        j = 0
+                        i = 0
+                        while i < diff:
+                            lnum = fnum - i - 1
+                            if lnum <= 0:
+                                lnum += 10000
+                            if lnum not in self.session_last_5 and lnum not in self.session_lost_list:
+                                self.session_lost_list.append(lnum)
+                                self.session_lost_cnt += 1
+                                j += 1
+                            i += 1
+                        if j > 0:
+                            self.on_lost_file()
+
+            lnum = fnum if fnum < 10000 else (fnum // 10)
+
+            if len(self.session_last_5) >= 5:
+                self.session_last_5 = self.session_last_5[1:]
+            self.session_last_number = lnum # update this after the delta check
+            if lnum not in self.session_last_5:
+                self.session_last_5.append(lnum)
+
             if len(self.session_lost_list) > 0:
                 while fnum in self.session_lost_list:
                     self.session_lost_list.remove(fnum)
+                    if len(self.session_lost_list) == 0:
+                        self.session_lost_cnt = 0
 
         # the way the FTP code works is that when this callback is called, the file has not been renamed yet
         if isimg:
@@ -436,15 +467,18 @@ class BucketApp:
         if self.thumbnail_queue.empty() == False:
             try:
                 thumbme = self.thumbnail_queue.get()
-                #bucketviewer.generate_thumbnail(thumbme)
-                bucketviewer.enqueue_thumb_generation(thumbme, important=False)
+                #self.ftmgr.generate_thumbnail(thumbme)
+                self.ftmgr.enqueue_thumb_generation(thumbme, important=False)
             except Exception as ex:
                 logger.error("Error generating thumbnail for \"" + thumbme + "\": " + str(ex))
 
     def pause_thumbnail_generation(self):
-        thumb_later = bucketviewer.thumbgen_clear()
+        thumb_later = self.ftmgr.thumbgen_clear()
         for tl in thumb_later:
             self.thumbnail_queue.put(tl)
+
+    def session_is_busy(self):
+        return self.session_last_act is not None and (time.monotonic() - self.session_last_act) < 2
 
     def ux_frame(self):
         tnow = time.monotonic()
@@ -506,6 +540,9 @@ class BucketApp:
             if self.copier.state != bucketcopy.COPIERSTATE_IDLE and self.copier.state != bucketcopy.COPIERSTATE_CANCELED and self.copier.state != bucketcopy.COPIERSTATE_RESTART:
                 self.ux_show_copystatus(y, pad)
                 y += font_height + UX_LINESPACE
+            else:
+                if self.copier.is_busy() == False and self.session_is_busy() == False:
+                    self.generate_next_thumbnail()
 
             y = bucketio.OLED_HEIGHT - font_height
             self.hwio.imagedraw.text((pad, pad+y), "MENU", font=self.font, fill=255)
@@ -630,7 +667,7 @@ class BucketApp:
                     (font_width, font_height) = self.font.getsize(hdr + ssid + "...")
                 txtlist.append(ssid)
 
-        if self.session_last_act is not None and (time.monotonic() - self.session_last_act) < 2:
+        if self.session_is_busy():
             if self.font_has_lower:
                 i = math.floor(self.ux_frame_cnt / 2) % (len(hdr) - 2)
                 c = hdr[i].lower()
@@ -645,7 +682,10 @@ class BucketApp:
                 txtlist.append("-%.1fmin " % (tmin))
 
         clients = bucketutils.get_wifi_clients()
-        txtlist.append("%d clients" % len(clients))
+        clicnt = len(clients)
+        #if clicnt == 0 and self.session_is_busy():
+        #    clicnt = 1
+        txtlist.append("%d clients" % clicnt)
 
         self.ux_show_timesliced_texts(y, pad, hdr, txtlist, 7)
 
@@ -841,6 +881,7 @@ def disk_unmount_start(path):
     if os.name == 'nt':
         return
     command = "umount " + bucketutils.find_mount_point(path)
+    bucketutils.run_cmdline_read(command)
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return process
 
@@ -857,6 +898,7 @@ def main():
     if bucket_app is None:
         bucket_app = app
     bucketutils.set_running_app(app)
+    bucketviewer.set_running_app(app)
     bucketftp.start_ftp_server(app)
     while True:
         app.ux_frame()
