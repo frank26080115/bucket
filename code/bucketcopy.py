@@ -152,7 +152,7 @@ class BucketCopier:
                             is_cam_file = True
                         else:
                             # looks like a generic file, or the file has already been renamed
-                            destfilepath = os.path.join(destdisk, pathtail)
+                            destfilepath = os.path.join(destdisk, pathtail.strip(os.path.sep))
 
                         if srcsize > 0 and (os.path.isfile(destfilepath) == False or (os.path.getsize(destfilepath) <= srcsize // 2 or (self.mode != COPIERMODE_BOTH and os.path.getsize(destfilepath) != srcsize))):
                             # passed overwrite rules
@@ -402,11 +402,10 @@ class BucketCopier:
             if (time.monotonic() - self.activity_time) < 3:
                 return True
         if self.priority_queue.empty() == False:
-            return True
-        else:
             if self.copy_thread is None:
                 self.copy_thread = threading.Thread(target=self.copy_worker, daemon=True)
                 self.copy_thread.start()
+            return True
         if self.file_remain > 0 and self.file_totsize > 0:
             return True
         return False

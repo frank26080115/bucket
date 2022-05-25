@@ -429,16 +429,17 @@ class BucketApp:
                     continue # don't copy to the same disk as the origin
                 if file.startswith(origdisk):
                     # enqueue the task
-                    self.copier.enqueue_copy(npath + ";" + os.path.join(destdisk, npath[len(origdisk):]))
+                    cmd = npath + ";" + os.path.join(destdisk, npath[len(origdisk) + 1:])
+                    self.copier.enqueue_copy(cmd)
 
     def on_missed_file(self, file, forced = False):
         isimg, filename, filedatecode, filenumber, fileext = bucketutils.path_is_image_file(file)
         if isimg and filenumber.isnumeric():
             fnum = int(filenumber)
-            if fnum not in self.session_lost_list:
-                self.session_lost_list.append(lnum)
-            self.session_lost_cnt += 1
-            self.on_lost_file(forced = forced)
+            if fnum not in self.session_lost_list and fnum not in self.session_last_5:
+                self.session_lost_list.append(fnum)
+                self.session_lost_cnt += 1
+                self.on_lost_file(forced = forced)
 
     def on_disk_full(self):
         self.alarm_reason |= ALARMFLAG_DISKFULL
@@ -477,8 +478,8 @@ class BucketApp:
         for tl in thumb_later:
             self.thumbnail_queue.put(tl)
 
-    def session_is_busy(self):
-        return self.session_last_act is not None and (time.monotonic() - self.session_last_act) < 2
+    def session_is_busy(self, t=2):
+        return self.session_last_act is not None and (time.monotonic() - self.session_last_act) < t
 
     def ux_frame(self):
         tnow = time.monotonic()
@@ -541,14 +542,21 @@ class BucketApp:
                 self.ux_show_copystatus(y, pad)
                 y += font_height + UX_LINESPACE
             else:
-                if self.copier.is_busy() == False and self.session_is_busy() == False:
+                if self.copier.is_busy() == False and self.session_is_busy(t=10) == False:
                     self.generate_next_thumbnail()
 
-            y = bucketio.OLED_HEIGHT - font_height
-            self.hwio.imagedraw.text((pad, pad+y), "MENU", font=self.font, fill=255)
+            if self.alarm_reason == 0 or True:
+                self.ux_menu.draw_bottom_texts(left = "MENU")
+            #else:
+            #    self.ux_menu.draw_bottom_texts(left = "MENU", right = "CLR WARN")
+
             if self.hwio.pop_button() == 1:
                 self.ux_screen = UXSCREEN_MENU
                 self.ux_menu.reset_state()
+
+            #if self.alarm_reason == 0 and self.hwio.pop_button() == 3:
+            #    self.reset_alarm()
+
         elif self.ux_screen == UXSCREEN_MENU:
             self.ux_menu.run()
 

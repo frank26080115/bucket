@@ -16,8 +16,6 @@ except:
 
 from PIL import Image, ImageDraw, ImageFont
 
-import bucketutils
-
 try:
     import bucketlogger
     logger = bucketlogger.getLogger()
@@ -272,8 +270,8 @@ def voltage_to_charge(x):
             [4.0  , 85],
             [3.4  , 10],
             [3.15 , 0],
-            [2.8  , -10],
-            [0    , -100],
+            [2.8  , -1],
+            [0    , -1],
         ]
     last = None
 
@@ -288,6 +286,14 @@ def voltage_to_charge(x):
 
     return -100 # past last table element
 
+def run_cmdline_read(x):
+    s = ""
+    with os.popen(x) as p:
+        s = p.read()
+    if "is not recognized as an internal or external command" in s:
+        raise Exception("ERROR: command \"%\" does not exist" % x)
+    return s
+
 def has_rtc():
     global is_embedded
     if is_embedded == False:
@@ -295,7 +301,7 @@ def has_rtc():
     x = os.system("hwclock -rv >/dev/null")
     if x == 0:
         return True
-    x = bucketutils.run_cmdline_read("hwclock -rv")
+    x = run_cmdline_read("hwclock -rv")
     x = str(x).lower()
     if "using the rtc interface to the clock" in x:
         return True
@@ -315,7 +321,7 @@ def cpu_get_maxminfreq(word):
     minfreq = 999999999999
     g = glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_" + word + "_freq", recursive=True)
     for cpu in g:
-        str = bucketutils.run_cmdline_read("cat " + cpu)
+        str = run_cmdline_read("cat " + cpu)
         str = str.strip() if str is not None else ""
         if str.isnumeric():
             x = int(str)

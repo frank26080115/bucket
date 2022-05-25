@@ -219,7 +219,7 @@ class BucketMenu:
     def draw_bottom_texts(self, left="", mid="", right="", yoffset = 0):
         pad = 1 if os.name == "nt" else 0
         (font_width, font_height) = self.app.font.getsize("X")
-        y = bucketio.OLED_HEIGHT - font_height
+        y = bucketio.OLED_HEIGHT - font_height + yoffset
         if len(left) > 0:
             self.app.hwio.imagedraw.text((pad, pad+y), left, font=self.app.font, fill=255)
         if len(mid) > 0:
@@ -280,6 +280,7 @@ class BucketMenu:
     def show_wifi_clients(self):
         clients = bucketutils.get_wifi_clients()
         pad = 1 if os.name == "nt" else 0
+        (font_width, font_height) = self.app.font.getsize('X')
         y = 0
         for c in clients:
             self.app.hwio.imagedraw.text((pad, pad+y), c, font=self.app.font, fill=255)

@@ -302,7 +302,7 @@ def start_ftp_server(running_app = None):
 
     print("FTP port %d" % port)
 
-    server = FTPServer(('192.168.1.79', port), ftp_handler)
+    server = FTPServer((bucketutils.get_wifi_ip(), port), ftp_handler)
     if bucket_app is not None:
         print("running FTP server with bucket app")
         bucket_app.ftp_server = server

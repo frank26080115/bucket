@@ -153,7 +153,7 @@ def get_wifi_ip():
         s.connect(("8.8.8.8", 80))
         return str(s.getsockname()[0])
     ipv4 = run_cmdline_read('ip addr show wlan0 | grep "\<inet\>" | awk \'{ print $2 }\' | awk -F "/" \'{ print $1 }\'')
-    return ipv4
+    return ipv4.strip()
 
 def get_wifi_ssid():
     if os.name != "nt":
@@ -329,16 +329,19 @@ def get_disk_label(path):
         lsblk = run_cmdline_read("lsblk --output MOUNTPOINT,LABEL")
         lines = lsblk.split('\n')
         for li in lines:
-            limp = li[0:li.index(' ')]
-            if limp == mp:
-                lbl = li[len(mp) + 1:].strip()
-                if len(lbl) > 0:
-                    res = lbl
-                    return res
+            if ' ' in li:
+                limp = li[0:li.index(' ')]
+                if limp == mp:
+                    lbl = li[len(mp) + 1:].strip()
+                    if len(lbl) > 0:
+                        res = lbl
+                        return res
         return res
     except Exception as ex:
         if os.name == "nt":
             return get_disk_label_windows(path)
+        else:
+            raise ex
         return None
 
 def get_disk_label_windows(path):
