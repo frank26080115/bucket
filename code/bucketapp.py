@@ -190,6 +190,7 @@ class BucketApp:
         disks = bucketutils.get_mounted_disks()
         disks.sort(reverse = True, key = disk_sort_func)
         if len(disks) <= 0:
+            print("no disks to load config from")
             return
 
         # look on all disks for the config file
@@ -197,6 +198,7 @@ class BucketApp:
             path = os.path.join(d, CONFIG_FILE_NAME)
             if os.path.isfile(path):
                 try:
+                    print("trying to load json config from " + path)
                     with open(path, 'r') as f:
                         self.cfg = json.load(f) # loads a file as a dictionary
                     return
@@ -212,10 +214,14 @@ class BucketApp:
                 g.sort(reverse=True) # make sure the latest is on top
                 for dir in g:
                     if os.path.isdir(dir) and "-" in dir:
-                        hdr = dir[0:dir.index('-')]
-                        if hdr.isnumeric() and len(hdr) == 6:
-                            self.last_file_date = datetime.datetime.strptime("20" + hdr, "%Y%m%d")
-                            bucketlogger.reconfig(bapp = self)
+                        bn = os.path.basename(dir.rstrip(os.path.sep))
+                        if len(bn) > 6:
+                            hdr = bn[-5:].strip()
+                            if hdr.isnumeric():
+                                self.last_file_date = datetime.datetime.strptime("202" + hdr, "%Y%m%d")
+                                bucketlogger.reconfig(bapp = self)
+                                print("date has been set, by config reader, to " + self.get_date_str())
+                                break
 
     def cfg_get_genericstring(self, key, defval):
         result = defval
@@ -320,6 +326,8 @@ class BucketApp:
         isimg, filename, filedatecode, filenumber, fileext = bucketutils.path_is_image_file(filepath)
         israw = bucketutils.ext_is_raw(fileext)
         if isimg and israw:
+            if "_" in filenumber:
+                filenumber = filenumber[0:filenumber.index('_')]
             fnum = int(filenumber)
             if self.session_first_number is None:
                 self.session_first_number = fnum
@@ -329,11 +337,14 @@ class BucketApp:
 
     def on_file_received(self, file):
         self.last_file = file
+        self.try_get_time()
 
         isimg, filename, filedatecode, filenumber, fileext = bucketutils.path_is_image_file(file)
         israw = bucketutils.ext_is_raw(fileext) # ideally we only count statistics for raw files, otherwise this code can lose a raw file and not notify the user when the corresponding jpg file exists
         donotcount = False
-        if "_" in filenumber:
+        if len(filenumber) <= 0:
+            fnum = None
+        elif "_" in filenumber:
             donotcount = True
             fnum = int(filenumber.replace("_", ""))
         else:
@@ -362,7 +373,7 @@ class BucketApp:
             self.session_total_cnt += 1
             if self.session_first_number is None:
                 self.session_first_number = fnum
-            if self.session_last_number is not None:
+            if self.session_last_number is not None and fnum is not None:
                 # check if we skipped any file numbers, accounting for roll-over
                 if fnum >= self.session_last_number:
                     diff = fnum - self.session_last_number
@@ -395,19 +406,20 @@ class BucketApp:
                         if j > 0:
                             self.on_lost_file()
 
-            lnum = fnum if fnum < 10000 else (fnum // 10)
+            if fnum is not None:
+                lnum = fnum if fnum < 10000 else (fnum // 10)
 
-            if len(self.session_last_5) >= 5:
-                self.session_last_5 = self.session_last_5[1:]
-            self.session_last_number = lnum # update this after the delta check
-            if lnum not in self.session_last_5:
-                self.session_last_5.append(lnum)
+                if len(self.session_last_5) >= 5:
+                    self.session_last_5 = self.session_last_5[1:]
+                self.session_last_number = lnum # update this after the delta check
+                if lnum not in self.session_last_5:
+                    self.session_last_5.append(lnum)
 
-            if len(self.session_lost_list) > 0:
-                while fnum in self.session_lost_list:
-                    self.session_lost_list.remove(fnum)
-                    if len(self.session_lost_list) == 0:
-                        self.session_lost_cnt = 0
+                if len(self.session_lost_list) > 0:
+                    while fnum in self.session_lost_list:
+                        self.session_lost_list.remove(fnum)
+                        if len(self.session_lost_list) == 0:
+                            self.session_lost_cnt = 0
 
         # the way the FTP code works is that when this callback is called, the file has not been renamed yet
         if isimg:
@@ -419,18 +431,18 @@ class BucketApp:
             self.last_file = npath
             self.thumbnail_queue.put(npath)
 
-        self.update_disk_list()
-        if len(self.disks) <= 1:
-            return # no other disk to copy to, give up
+            self.update_disk_list()
+            if len(self.disks) <= 1:
+                return # no other disk to copy to, give up
 
-        for origdisk in self.disks:
-            for destdisk in self.disks:
-                if origdisk == destdisk:
-                    continue # don't copy to the same disk as the origin
-                if file.startswith(origdisk):
-                    # enqueue the task
-                    cmd = npath + ";" + os.path.join(destdisk, npath[len(origdisk):].strip(os.path.sep))
-                    self.copier.enqueue_copy(cmd)
+            for origdisk in self.disks:
+                for destdisk in self.disks:
+                    if origdisk == destdisk:
+                        continue # don't copy to the same disk as the origin
+                    if file.startswith(origdisk):
+                        # enqueue the task
+                        cmd = npath + ";" + os.path.join(destdisk, npath[len(origdisk):].strip(os.path.sep))
+                        self.copier.enqueue_copy(cmd)
 
     def on_missed_file(self, file, forced = False):
         isimg, filename, filedatecode, filenumber, fileext = bucketutils.path_is_image_file(file)
@@ -463,6 +475,7 @@ class BucketApp:
                         self.last_file = None
                     else:
                         bucketlogger.reconfig(bapp = self)
+                        print("date has been set, by EXIF, to " + self.get_date_str())
 
     def generate_next_thumbnail(self):
         if self.thumbnail_queue.empty() == False:
@@ -712,7 +725,7 @@ class BucketApp:
             str = "TOT: %d" % (self.session_total_cnt)
         elif tmod < (5 * 3):
             str = "LOST: %d" % (self.session_lost_cnt)
-        if (time.monotonic() - self.session_last_act) < 2:
+        if self.session_last_act is not None and (time.monotonic() - self.session_last_act) < 2:
             if self.font_has_lower:
                 # animated busy indication by making the letters dance
                 r = random.randint(0, 3)
@@ -907,6 +920,7 @@ def main():
         bucket_app = app
     bucketutils.set_running_app(app)
     bucketviewer.set_running_app(app)
+    app.load_cfg()
     bucketftp.start_ftp_server(app)
     app.http_server = bucketviewer.get_server(8000)
     app.http_start()

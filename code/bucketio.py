@@ -300,12 +300,14 @@ def has_rtc():
         return False
     x = os.system("hwclock -rv >/dev/null")
     if x == 0:
+        print("HW clock detected")
         return True
     x = run_cmdline_read("hwclock -rv")
     x = str(x).lower()
     if "using the rtc interface to the clock" in x:
+        print("HW clock detected")
         return True
-    if "no usable clock" in x or "cannot access the hardware clock" in x:
+    if "no usable clock" in x or "cannot access the hardware clock" in x or "Cannot access the Hardware Clock".lower() in x:
         return False
     return False
 

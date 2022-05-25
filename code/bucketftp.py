@@ -88,7 +88,7 @@ class BucketFtpHandler(FTPHandler):
         if bucket_app is None:
             return
         bucket_app.on_nonactivity()
-        bucket_app.on_missed_file(file, forced = True)
+        bucket_app.on_missed_file(file)
         try:
             if os.path.isfile(file):
                 os.remove(file)
