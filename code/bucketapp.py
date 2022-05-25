@@ -429,7 +429,7 @@ class BucketApp:
                     continue # don't copy to the same disk as the origin
                 if file.startswith(origdisk):
                     # enqueue the task
-                    cmd = npath + ";" + os.path.join(destdisk, npath[len(origdisk) + 1:])
+                    cmd = npath + ";" + os.path.join(destdisk, npath[len(origdisk):].strip(os.path.sep))
                     self.copier.enqueue_copy(cmd)
 
     def on_missed_file(self, file, forced = False):
