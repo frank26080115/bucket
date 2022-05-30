@@ -19,7 +19,7 @@ MENUITEM_EJECT        = 4
 MENUITEM_CLONE        = 5
 MENUITEM_LOSTFILES    = 6
 MENUITEM_NETINFO      = 7
-#MENUITEM_WIFICLIENTS  = 8
+MENUITEM_QRCODES      = 8
 
 class BucketMenu:
     def __init__(self, app):
@@ -62,8 +62,8 @@ class BucketMenu:
                 items.append(["CLONE DISKS " + tail, MENUITEM_CLONE])
         if len(self.app.session_lost_list) > 0:
             items.append(["LOST FILES", MENUITEM_LOSTFILES])
-        items.append(["WIFI+FTP INFO", MENUITEM_NETINFO])
-        #items.append(["WIFI CLIENTS", MENUITEM_WIFICLIENTS])
+        items.append(["NET INFO", MENUITEM_NETINFO])
+        items.append(["NET QR CODES", MENUITEM_QRCODES])
 
         # there is a chance that the menu changed while still visible
         # ideally we keep the user's cursor on the same item
@@ -212,7 +212,7 @@ class BucketMenu:
                 self.show_lost_files()
                 self.hold_screen(btn_popped)
         elif self.selected_item == MENUITEM_NETINFO:
-            self.draw_bottom_texts(left="INFO", mid="QR", right="CLIENTS")
+            self.draw_bottom_texts(left="INFO",right="CLIENTS")
             if btn_popped == 1 or btn_popped == 3:
                 self.timeout_time = time.monotonic()
                 self.app.hwio.oled_blankimage()
@@ -221,14 +221,18 @@ class BucketMenu:
                 elif btn_popped == 3:
                     self.show_wifi_clients()
                 self.hold_screen(btn_popped)
-            elif btn_popped == 2:
-                self.show_http_qr_code()
+        elif self.selected_item == MENUITEM_QRCODES:
+            self.draw_bottom_texts(left="WIFI",right="URL")
+            if btn_popped == 1:
+                self.show_qr_code_wifi()
+            elif btn_popped == 3:
+                self.show_qr_code_url()
         #self.app.hwio.oled_show()
 
     def draw_bottom_texts(self, left="", mid="", right="", yoffset = 0):
         pad = 1 if os.name == "nt" else 0
         (font_width, font_height) = self.app.font.getsize("X")
-        y = bucketio.OLED_HEIGHT - font_height + yoffset
+        y = bucketio.OLED_HEIGHT - font_height + yoffset - 1
         if len(left) > 0:
             self.app.hwio.imagedraw.text((pad, pad+y), left, font=self.app.font, fill=255)
         if len(mid) > 0:
@@ -244,6 +248,7 @@ class BucketMenu:
         self.app.hwio.oled_show()
         time.sleep(min_t)
         while self.app.hwio.is_btn_held(btn):
+            self.timeout_time = time.monotonic()
             self.app.hwio.oled_show()
 
     def show_lost_files(self):
@@ -304,16 +309,26 @@ class BucketMenu:
             self.app.hwio.imagedraw.text((pad, pad+y), "NONE", font=self.app.font, fill=255)
             y += font_height + bucketapp.UX_LINESPACE
 
-    def show_http_qr_code(self):
+    def show_qr_code_wifi(self):
+        self.show_qr_code("WIFI:S:%s;T:WPA;P:%s;;" % (bucketutils.get_wifi_ssid(), self.app.cfg_get_ftppassword()))
+
+    def show_qr_code_url(self):
+        self.show_qr_code("http://%s:%u/" % (bucketutils.get_wifi_ip(), self.app.cfg_get_httpport()))
+
+    def show_qr_code(self, x):
         try:
             import qrcode
-            x = "http://" + bucketutils.get_wifi_ip() + (":%u" % (self.app.cfg_get_httpport())) + "/"
-            qr = qrcode.QRCode(version=1, box_size=2, border=1) # box size = 2 seems to fit the screen
-            qr.add_data(x)
-            qr.make(fit = True)
-            img = qr.make_image(fill_color="white", back_color="black")
-            imgbw = img.convert('1')
-            width, height = imgbw.size
+            box_sz = 4
+            while box_sz >= 1:
+                qr = qrcode.QRCode(version=1, box_size=box_sz, border=1) # box size = 2 seems to fit the screen
+                qr.add_data(x)
+                qr.make(fit = True)
+                img = qr.make_image(fill_color="white", back_color="black")
+                imgbw = img.convert('1')
+                width, height = imgbw.size
+                if height <= bucketio.OLED_HEIGHT:
+                    break
+                box_sz -= 1
             self.app.hwio.oled_blankimage()
             self.app.hwio.imagedraw.bitmap((int(round((bucketio.OLED_WIDTH - width) / 2)), int(round((bucketio.OLED_HEIGHT - height) / 2))), imgbw, fill=255)
             self.app.hwio.oled_show()
@@ -328,10 +343,13 @@ class BucketMenu:
             y += font_height + bucketapp.UX_LINESPACE
             self.app.hwio.imagedraw.text((pad, pad+y), "failed", font=self.app.font, fill=255)
             y += font_height + bucketapp.UX_LINESPACE
+            self.app.hwio.imagedraw.text((pad, pad+y), "DATA:", font=self.app.font, fill=255)
+            y += font_height + bucketapp.UX_LINESPACE
             self.app.hwio.imagedraw.text((pad, pad+y), x, font=self.app.font, fill=255)
             y += font_height + bucketapp.UX_LINESPACE
             self.app.hwio.oled_show()
         while True:
+            self.timeout_time = time.monotonic()
             btn_popped = self.app.hwio.pop_button()
             if btn_popped != 0:
                 return
