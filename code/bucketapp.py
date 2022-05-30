@@ -319,6 +319,9 @@ class BucketApp:
     def cfg_get_ftpport(self):
         return self.cfg_get_genericint("ftp_port", 2133)
 
+    def cfg_get_httpport(self):
+        return self.cfg_get_genericint("http_port", 8000)
+
     def cfg_get_bucketname(self):
         return self.cfg_get_genericstring("bucket_name", "photos")
 
@@ -331,6 +334,16 @@ class BucketApp:
             fnum = int(filenumber)
             if self.session_first_number is None:
                 self.session_first_number = fnum
+
+        if self.has_rtc == False:
+            if os.path.sep in filepath:
+                pathparts = filepath.split(os.path.sep)
+                if len(pathparts) >= 2:
+                    dir = pathparts[-2]
+                    if dir.isnumeric() and len(dir) == 8:
+                        t =  datetime.datetime.strptime("202" + dir[3:], "%Y%m%d")
+                        if self.last_file_date is None or t > self.last_file_date:
+                            self.last_file_date = t
 
         # we are busying copying a file, so stop the low priority thumbnail generation thread
         self.pause_thumbnail_generation()
@@ -625,14 +638,14 @@ class BucketApp:
             if self.batt_lowest >= LOW_BATT_THRESH and higher_batt < LOW_BATT_THRESH:
                 self.alarm_reason |= ALARMFLAG_BATTLOW
             self.batt_lowest = higher_batt
-        str = "BATT: "
+        s = "BATT: "
         if use_volts:
             for i in batt_volts:
-                str += "%.2fV  " % i
+                s += "%.2fV  " % i
         else:
             for i in batt_chgs:
-                str += "%4d%%  " % round(i)
-        self.hwio.imagedraw.text((pad, pad+y), str.rstrip(), font=self.font, fill=255)
+                s += "%4d%%  " % round(i)
+        self.hwio.imagedraw.text((pad, pad+y), s.rstrip(), font=self.font, fill=255)
 
     def ux_show_warnings(self, y, pad):
         hdr = "WARN: "
@@ -716,36 +729,36 @@ class BucketApp:
             return
         tmod = (self.ux_frame_cnt % (5 * 3))
         if tmod < (5 * 1):
-            str = "SESS: %d~" % (self.session_first_number)
+            s = "SESS: %d~" % (self.session_first_number)
             if self.session_last_number is not None:
-                str += "%d" % self.session_last_number
+                s += "%d" % self.session_last_number
             else:
-                str += "?"
+                s += "?"
         elif tmod < (5 * 2):
-            str = "TOT: %d" % (self.session_total_cnt)
+            s = "TOT: %d" % (self.session_total_cnt)
         elif tmod < (5 * 3):
-            str = "LOST: %d" % (self.session_lost_cnt)
+            s = "LOST: %d" % (self.session_lost_cnt)
         if self.session_last_act is not None and (time.monotonic() - self.session_last_act) < 2:
             if self.font_has_lower:
                 # animated busy indication by making the letters dance
                 r = random.randint(0, 3)
-                c = str[r]
-                str = str[0:r] + c.lower() + str[r + 1:]
+                c = s[r]
+                s = s[0:r] + c.lower() + s[r + 1:]
             else:
                 # animated busy symbol
                 tmod = self.ux_frame_cnt % (2 * 5)
                 if tmod < (2 * 1):
-                    str = ">" + str
+                    s = ">" + s
                 elif tmod < (2 * 2):
-                    str = "=" + str
+                    s = "=" + s
                 elif tmod < (2 * 3):
-                    str = "-" + str
+                    s = "-" + s
                 elif tmod < (2 * 4):
-                    str = "=" + str
-        (font_width, font_height) = self.font.getsize(str)
+                    s = "=" + s
+        (font_width, font_height) = self.font.getsize(s)
         if font_width > (bucketio.OLED_WIDTH - (pad * 2)):
-            str = str.replace(" ", "")
-        self.hwio.imagedraw.text((pad, pad+y), str.rstrip(), font=self.font, fill=255)
+            s = s.replace(" ", "")
+        self.hwio.imagedraw.text((pad, pad+y), s.rstrip(), font=self.font, fill=255)
 
     def ux_show_disks(self, y, pad):
         self.update_disk_list()
@@ -818,10 +831,10 @@ class BucketApp:
         self.ux_show_timesliced_texts(y, pad, "", txtlist, 3)
 
     def ux_show_lost(self, y, pad):
-        str = "LOST: %d" % self.session_lost_list[0]
+        s = "LOST: %d" % self.session_lost_list[0]
         if len(self.session_lost_list) > 1:
-            str += " ..."
-        self.hwio.imagedraw.text((pad, pad+y), str.rstrip(), font=self.font, fill=255)
+            s += " ..."
+        self.hwio.imagedraw.text((pad, pad+y), s.rstrip(), font=self.font, fill=255)
 
     def ux_show_copystatus(self, y, pad):
         state, is_busy, percentage, sizestr, timestr = self.copier.get_status()
@@ -922,7 +935,7 @@ def main():
     bucketviewer.set_running_app(app)
     app.load_cfg()
     bucketftp.start_ftp_server(app)
-    app.http_server = bucketviewer.get_server(8000)
+    app.http_server = bucketviewer.get_server(app.cfg_get_httpport())
     app.http_start()
     while True:
         app.ux_frame()

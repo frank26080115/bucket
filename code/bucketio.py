@@ -323,10 +323,10 @@ def cpu_get_maxminfreq(word):
     minfreq = 999999999999
     g = glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_" + word + "_freq", recursive=True)
     for cpu in g:
-        str = run_cmdline_read("cat " + cpu)
-        str = str.strip() if str is not None else ""
-        if str.isnumeric():
-            x = int(str)
+        s = run_cmdline_read("cat " + cpu)
+        s = s.strip() if s is not None else ""
+        if s.isnumeric():
+            x = int(s)
             if x > maxfreq:
                 maxfreq = x
             if x < minfreq:
@@ -365,12 +365,12 @@ def test_buttons():
     print("Bucket IO initialized buttons")
     while True:
         time.sleep(1)
-        str = "%d, " % (round(time.monotonic()))
+        s = "%d, " % (round(time.monotonic()))
         if bhw.button_queue.empty():
-            str += "none"
+            s += "none"
         while bhw.button_queue.empty() == False:
-            str += "%d, " % bhw.button_queue.get()
-        print(str)
+            s += "%d, " % bhw.button_queue.get()
+        print(s)
 
 def test_buzzer():
     bhw = BucketIO()
@@ -391,10 +391,10 @@ def test_oled(t = 0):
     (font_width, font_height) = font.getsize("X")
     while True:
         bhw.oled_blankimage()
-        str = "Time: %.3f" % time.monotonic()
-        bhw.imagedraw.text((2, 2), str, font=font, fill=255)
+        s = "Time: %.3f" % time.monotonic()
+        bhw.imagedraw.text((2, 2), s, font=font, fill=255)
         bhw.oled_show()
-        print(str)
+        print(s)
         time.sleep(t) # this manages about 10 FPS
 
 if __name__ == "__main__":

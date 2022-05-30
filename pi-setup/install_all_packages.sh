@@ -19,6 +19,7 @@ sudo apt-get -y install python3-psutil
 sudo apt-get -y install python3-pyftpdlib
 pip3 install adafruit-circuitpython-ssd1306
 pip3 install pathlib
+pip3 install qrcode[pil]
 
 sudo apt-get -y install exfat-fuse exfat-utils
 # the following might fail

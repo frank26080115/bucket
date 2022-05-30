@@ -289,8 +289,6 @@ def start_ftp_server(running_app = None):
     authorizer.add_user(username, password, os.getcwd(), perm='elradfmwMT')
     #authorizer.add_anonymous(os.getcwd())
 
-    print("FTP username \"%s\" password \"%s\"" % (username, password))
-
     ftp_handler               = BucketFtpHandler
     ftp_handler.authorizer    = authorizer
     ftp_handler.dtp_handler   = BucketDtpHandler
@@ -299,8 +297,6 @@ def start_ftp_server(running_app = None):
     port = 2133
     if bucket_app is not None:
         port = bucket_app.cfg_get_ftpport()
-
-    print("FTP port %d" % port)
 
     server = FTPServer((bucketutils.get_wifi_ip(), port), ftp_handler)
     if bucket_app is not None:

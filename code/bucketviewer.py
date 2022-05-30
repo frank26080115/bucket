@@ -68,9 +68,9 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-type", "text/html")
                 self.end_headers()
 
-                def writeout(str, hfile, wfile):
-                    hfile.write(str)
-                    wfile.write(bytes(str, "utf-8"))
+                def writeout(s, hfile, wfile):
+                    hfile.write(s)
+                    wfile.write(bytes(s, "utf-8"))
 
                 with open(os.path.join(dir, dd) + ".htm", "w") as htmlfile:
 
@@ -233,6 +233,7 @@ def keep_file(vpath, dirword = "keep", canrecurse = True, fromhttp = True):
     elif os.path.isfile(fpath2) and os.path.isfile(kpath) == True and os.getsize(kpath) <= 0:
         os.remove(kpath)
         os.rename(fpath2, kpath)
+
     if bucket_app is not None:
         if len(bucket_app.disks) > 1:
             for disk in bucket_app.disks:

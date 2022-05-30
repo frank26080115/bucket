@@ -190,6 +190,8 @@ def get_wifi_ssid():
     return ""
 
 def get_wifi_password():
+    if os.name == "nt":
+        return "1234567890"
     try:
         r = run_cmdline_read("cat /etc/hostapd/hostapd.conf")
         lines = r.split('\n')
@@ -201,8 +203,6 @@ def get_wifi_password():
                     return passphrase
     except:
         pass
-    if os.name == "nt":
-        return "1234567890"
 
 def get_wifi_clients():
     macs = []
