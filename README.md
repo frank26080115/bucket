@@ -29,7 +29,7 @@ Performs disk-cloning when multiple USB disks are inserted.
 
 Uses a HTTP server to show an image gallery in a web browser. The user can choose to keep or delete a photo from the web-page. Each photo is checked for where the camera focused on, and a zoomed-in cropped thumbnail is shown to the user showing where the camera focused. This allows for a very quick decision whether or not an image is in-focus enough to keep.
 
-The software keeps track of the numbers in the file-names. If the number sequence skips a number, it might mean a missing photo, the missing number is shown to the user so they can check in the camera what happened. The camera will indicate a failed FTP transfer, but usually it just retries until it works. This is only useful when the camera is setup to transfer-as-you-shoot.
+The software keeps track of the numbers in the file-names. If the number sequence skips a number, it might mean a missing photo, the missing number is shown to the user so they can check in the camera what happened. The camera can indicate a failed FTP transfer, but usually it just retries until it works. This is only useful when the camera is setup to transfer-as-you-shoot.
 
 Hardware UX
 ----
