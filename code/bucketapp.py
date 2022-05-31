@@ -77,6 +77,10 @@ class BucketApp:
         self.fsize_list           = [0] * 6
         self.fsize_avg            = 80 # start with a worse case estimate
 
+    def reset_lost(self):
+        self.session_lost_cnt     = 0
+        self.session_lost_list    = []
+
     def reset_alarm(self):
         self.alarm_reason = 0
         self.hwio.buzzer_off()
@@ -507,7 +511,7 @@ class BucketApp:
     def session_is_busy(self, t=2):
         return self.session_last_act is not None and (time.monotonic() - self.session_last_act) < t
 
-    def ux_frame(self):
+    def ux_frame(self, demo = False):
         tnow = time.monotonic()
         # run this every 1/5th of a second
         if (tnow - self.last_frame_time) < 0.2:
@@ -535,37 +539,44 @@ class BucketApp:
         (font_width, font_height) = self.font.getsize("X")
         self.hwio.oled_blankimage()
 
-        if self.ux_screen == UXSCREEN_MAIN:
+        if self.ux_screen == UXSCREEN_MAIN or demo:
             if self.alarm_reason == 0:
                 self.ux_show_clock(y, pad)
                 y += font_height + UX_LINESPACE
-                self.ux_show_batt(y, pad, (self.ux_frame_cnt % 20) < 10)
+                self.ux_show_batt(y, pad, (self.ux_frame_cnt % 20) < 10, demo = demo)
                 y += font_height + UX_LINESPACE
             else:
                 tmod = (self.ux_frame_cnt % 30)
                 if tmod < 10:
                     self.ux_show_clock(y, pad)
                 else:
-                    self.ux_show_batt(y, pad, (tmod < 20))
+                    self.ux_show_batt(y, pad, (tmod < 20), demo = demo)
                 y += font_height + UX_LINESPACE
                 self.ux_show_warnings(y, pad)
+                y += font_height + UX_LINESPACE
+
+            if demo and self.alarm_reason == 0:
+                self.ux_show_warnings(y, pad, demo = True)
                 y += font_height + UX_LINESPACE
 
             self.ux_show_wifi(y, pad)
             y += font_height + UX_LINESPACE
 
-            self.ux_show_session(y, pad)
+            self.ux_show_session(y, pad, demo = demo)
             y += font_height + UX_LINESPACE
 
-            self.ux_show_disks(y, pad)
+            self.ux_show_disks(y, pad, demo = demo)
             y += font_height + UX_LINESPACE
 
-            if len(self.session_lost_list) > 0:
+            if len(self.session_lost_list) > 0 and not demo:
                 self.ux_show_lost(y, pad)
                 y += font_height + UX_LINESPACE
 
             if self.copier.state != bucketcopy.COPIERSTATE_IDLE and self.copier.state != bucketcopy.COPIERSTATE_CANCELED and self.copier.state != bucketcopy.COPIERSTATE_RESTART:
                 self.ux_show_copystatus(y, pad)
+                y += font_height + UX_LINESPACE
+            elif demo:
+                self.ux_show_copystatus(y, pad, demo = True)
                 y += font_height + UX_LINESPACE
             else:
                 if self.copier.is_busy() == False and self.session_is_busy(t=10) == False:
@@ -601,8 +612,8 @@ class BucketApp:
                     x = pad + font_width + 1
                     w = bucketio.OLED_WIDTH - x - 1
                     wb = w * p / 100
-                    self.hwio.imagedraw.rectangle((x, y + 2, bucketio.OLED_WIDTH - 1, y + font_height), fill=None, outline=255)
-                    self.hwio.imagedraw.rectangle((x, y + 2, x + wb, y + font_height), fill=255, outline=255)
+                    self.hwio.imagedraw.rectangle((x, y + 2, bucketio.OLED_WIDTH - 1, y + font_height - 1), fill=None, outline=255)
+                    self.hwio.imagedraw.rectangle((x, y + 2, x + wb, y + font_height - 1), fill=255, outline=255)
                     self.hwio.imagedraw.text((pad, pad+y), prefix, font=self.font, fill=255)
                 else:
                     self.hwio.imagedraw.text((pad, pad+y), prefix + txt, font=self.font, fill=255)
@@ -631,7 +642,7 @@ class BucketApp:
                         (font_width, font_height) = self.font.getsize(clkstr)
         self.hwio.imagedraw.text((pad, pad+y), clkstr, font=self.font, fill=255)
 
-    def ux_show_batt(self, y, pad, use_volts):
+    def ux_show_batt(self, y, pad, use_volts, demo = False):
         batt_raws, batt_volts, batt_chgs = self.hwio.batt_read()
         higher_batt = max(batt_chgs)
         if higher_batt < self.batt_lowest:
@@ -639,22 +650,26 @@ class BucketApp:
                 self.alarm_reason |= ALARMFLAG_BATTLOW
             self.batt_lowest = higher_batt
         s = "BATT: "
-        if use_volts:
-            for i in batt_volts:
-                s += "%.2fV  " % i
+        if not demo:
+            if use_volts:
+                for i in batt_volts:
+                    s += "%.2fV  " % i
+            else:
+                for i in batt_chgs:
+                    s += "%4d%%  " % round(i)
         else:
-            for i in batt_chgs:
-                s += "%4d%%  " % round(i)
+            s += "6.32V   3%"
         self.hwio.imagedraw.text((pad, pad+y), s.rstrip(), font=self.font, fill=255)
 
-    def ux_show_warnings(self, y, pad):
+    def ux_show_warnings(self, y, pad, demo = False):
         hdr = "WARN: "
         str2 = ""
-        if (self.alarm_reason & ALARMFLAG_DISKFULL) != 0:
+        reason = self.alarm_reason if not demo else (ALARMFLAG_BATTLOW)
+        if (reason & ALARMFLAG_DISKFULL) != 0:
             str2 += "FULL "
-        if (self.alarm_reason & ALARMFLAG_BATTLOW) != 0:
+        if (reason & ALARMFLAG_BATTLOW) != 0:
             str2 += "BATT "
-        if (self.alarm_reason & ALARMFLAG_LOSTFILE) != 0:
+        if (reason & ALARMFLAG_LOSTFILE) != 0:
             str2 += "LOST "
         str2 = str2.rstrip()
         (font_width, font_height) = self.font.getsize(hdr + str2)
@@ -723,10 +738,16 @@ class BucketApp:
 
         self.ux_show_timesliced_texts(y, pad, hdr, txtlist, 7)
 
-    def ux_show_session(self, y, pad):
-        if self.session_first_number is None:
+    def ux_show_session(self, y, pad, demo = False):
+        if self.session_first_number is None and not demo:
             self.hwio.imagedraw.text((pad, pad+y), "NEW SESSION", font=self.font, fill=255)
             return
+
+        if demo:
+            s = "Sess: 7235~7341"
+            self.hwio.imagedraw.text((pad, pad+y), s, font=self.font, fill=255)
+            return
+
         tmod = (self.ux_frame_cnt % (5 * 3))
         if tmod < (5 * 1):
             s = "SESS: %d~" % (self.session_first_number)
@@ -760,7 +781,7 @@ class BucketApp:
             s = s.replace(" ", "")
         self.hwio.imagedraw.text((pad, pad+y), s.rstrip(), font=self.font, fill=255)
 
-    def ux_show_disks(self, y, pad):
+    def ux_show_disks(self, y, pad, demo = False):
         self.update_disk_list()
         if len(self.disks) <= 0:
             self.hwio.imagedraw.text((pad, pad+y), "NO DISK", font=self.font, fill=255)
@@ -773,7 +794,7 @@ class BucketApp:
             disk = self.disks[disk_idx]
             # show which disk
             if disk_idx == 0:
-                if disk_cnt > 1:
+                if disk_cnt > 1 or demo:
                     idc = "[M]: "
                 else:
                     idc = ": "
@@ -828,7 +849,7 @@ class BucketApp:
             txtlist.append(str2 + str3)
             # two similar entries occupies two consecutive time slots
             disk_idx += 1
-        self.ux_show_timesliced_texts(y, pad, "", txtlist, 3)
+        self.ux_show_timesliced_texts(y, pad, "", txtlist, 3 if not demo else 6)
 
     def ux_show_lost(self, y, pad):
         s = "LOST: %d" % self.session_lost_list[0]
@@ -836,15 +857,20 @@ class BucketApp:
             s += " ..."
         self.hwio.imagedraw.text((pad, pad+y), s.rstrip(), font=self.font, fill=255)
 
-    def ux_show_copystatus(self, y, pad):
+    def ux_show_copystatus(self, y, pad, demo = False):
         state, is_busy, percentage, sizestr, timestr = self.copier.get_status()
-        if state == bucketcopy.COPIERSTATE_COPY:
+        if state == bucketcopy.COPIERSTATE_COPY or demo:
             txtlist = []
+            if demo:
+                percentage = 25.3  if (percentage < 20 or percentage > 80) else percentage
+                sizestr = "756 MB" if state != bucketcopy.COPIERSTATE_COPY else sizestr
+                timestr = "756 MB" if state != bucketcopy.COPIERSTATE_COPY else sizestr
             txtlist.append("PERCENTBAR %.1f" % percentage)
             txtlist.append("%.1f%%" % percentage)
             txtlist.append(sizestr)
             txtlist.append(timestr)
             fcnt = self.copier.total_files - self.copier.done_files
+            fcnt = 654 if (demo and fcnt <= 0) else fcnt
             txtlist.append("%d F" % fcnt)
             self.ux_show_timesliced_texts(y, pad, "COPY: ", txtlist, 10)
         elif state == bucketcopy.COPIERSTATE_CALC or state == bucketcopy.COPIERSTATE_RESTART:

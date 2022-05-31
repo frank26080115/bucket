@@ -124,9 +124,13 @@ class BucketMenu:
                 self.reset_state()
                 self.app.ux_screen = bucketapp.UXSCREEN_MAIN
         elif self.selected_item == MENUITEM_CLEARSESSION:
-            self.draw_bottom_texts(mid="CLEAR")
-            if btn_popped == 2:
+            self.draw_bottom_texts(left="CLEAR", right="CLR LOST")
+            if btn_popped == 1:
                 self.app.reset_stats()
+                self.reset_state()
+                self.app.ux_screen = bucketapp.UXSCREEN_MAIN
+            elif btn_popped == 3:
+                self.app.reset_lost()
                 self.reset_state()
                 self.app.ux_screen = bucketapp.UXSCREEN_MAIN
         elif self.selected_item == MENUITEM_SHUTDOWN:
@@ -200,6 +204,7 @@ class BucketMenu:
                 if btn_popped == 2:
                     self.app.hwio.oled_blankimage()
                     self.draw_bottom_texts(left="STOPPING COPY...")
+                    self.app.hwio.oled_show()
                     self.app.copier.user_cancel()
                     self.app.copier.start(bucketcopy.COPIERMODE_NONE)
                     self.reset_state()
@@ -227,6 +232,9 @@ class BucketMenu:
                 self.show_qr_code_wifi()
             elif btn_popped == 3:
                 self.show_qr_code_url()
+            elif btn_popped == 2:
+                # hidden demo
+                self.show_demo_screen()
         #self.app.hwio.oled_show()
 
     def draw_bottom_texts(self, left="", mid="", right="", yoffset = 0):
@@ -355,3 +363,11 @@ class BucketMenu:
                 return
             time.sleep(0.1)
             self.app.hwio.oled_show()
+
+    def show_demo_screen(self):
+        while True:
+            self.timeout_time = time.monotonic()
+            self.app.ux_frame(demo = True)
+            time.sleep(0.1)
+            if self.app.hwio.pop_button() != 0:
+                return
