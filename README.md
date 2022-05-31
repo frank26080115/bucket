@@ -3,9 +3,7 @@ Bucket
 
 This is a tool made to transfer and backup photos from a professional camera while in-the-field. Built with a Raspberry Pi 4 (other Pis will work too, it's all just Python code), using Wi-Fi for file transfers and USB disks for file storage, powered by batteries.
 
-![](doc/pics/pic_pi_box.jpg)
-
-![](doc/pics/pic_system_screen.jpg)
+![](doc/pics/pic_title.jpg)
 
 Problem
 ----
