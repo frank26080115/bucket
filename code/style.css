@@ -33,3 +33,8 @@ body {
   border-color: #F00;
   border-style: solid;
 }
+
+button {
+  width: 25%;
+  font-size: 36pt;
+}

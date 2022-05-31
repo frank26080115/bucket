@@ -31,7 +31,7 @@ Performs disk-cloning when multiple USB disks are inserted.
 
 Uses a HTTP server to show an image gallery in a web browser. The user can choose to keep or delete a photo from the web-page. Each photo is checked for where the camera focused on, and a zoomed-in cropped thumbnail is shown to the user showing where the camera focused (which is even cooler since my camera have AI driven bird-eye-detect).
 
-![](doc/pics/phonescreen_webpage_merganser.jpg)
+![](doc/pics/pic_phone_webpage.jpg)
 
 This allows for a very quick decision whether or not an image is in-focus enough to keep. This implementation keeps the file-sizes small for the web-page, but the user can still click into the full resolution file too.
 
