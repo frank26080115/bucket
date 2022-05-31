@@ -25,6 +25,8 @@ Runs as a FTP server for professional cameras to transfer photos into. A redunda
 
 Copies photos from SD card if a SD card reader is inserted into a USB port. Or plug in the camera itself (configure it to run in mass storage mode, and disable USB charging).
 
+![](doc/pics/diagram_of_dataflow.png)
+
 The file-names for the photos are typically numbered from 0 to 9999. This isn't a lot of photos and rolls over quickly. When a photo is copied, it is automatically renamed with a much longer number that indicates the date it was taken. The date makes every photo file-name unique and can be easily searched-for and sorted.
 
 EXIF data of the photo is checked for the photo's 5-star rating, if it is rated in-camera, then it is automatically marked for keeping.

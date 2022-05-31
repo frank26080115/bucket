@@ -26,7 +26,15 @@ sudo pip3 install qrcode[pil]
 
 sudo apt-get -y install exfat-fuse exfat-utils
 # the following might fail
-#sudo apt-get -y install usbmount
+sudo apt-get -y install usbmount
+
+if [[ $? > 0 ]]
+then
+    echo "failed to install usbmount using apt-get, calling for alternative install"
+    ./install_usbmount.sh
+else
+    echo "successfully installed usbmount using apt-get"
+fi
 
 pip3 install --upgrade adafruit-python-shell
 sudo pip3 install --upgrade adafruit-python-shell
@@ -36,5 +44,3 @@ pip3 install --upgrade adafruit-blinka
 sudo pip3 install --upgrade adafruit-blinka
 
 echo "finished all package installation tasks"
-
-echo "TODO: install usbmount"
