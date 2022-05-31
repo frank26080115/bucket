@@ -73,6 +73,10 @@ A 3D printed box is designed to protect the entire assembly. It is 3D printed in
 
 ![](doc/pics/pic_pi_box.jpg)
 
+The slots in the design are meant for strapping down a small USB SSD. These SSDs can have one or two TB of storage and should be pretty reliable since they use M.2 drives inside.
+
+![](doc/pics/pic_ssd_straps.jpg)
+
 Software Architecture
 ----
 
@@ -132,7 +136,7 @@ This charger is attached to the bottom of the Raspberry Pi via LEGO!
 
 ![](doc/pics/pic_bottom_lego_plates.jpg)
 
-I think this whole project draws about under 1A during actual file transfer using USB flash drives, but a bit over 1A when I use a USB-C NVMe SSD. Roughly 4 to 5 hours of battery life.
+I think this whole project draws about under 1A during actual file transfer using USB flash drives, but a bit over 1A when I use a USB-C SSD. Roughly 4 to 5 hours of battery life.
 
 Alternative Implementation
 ----
