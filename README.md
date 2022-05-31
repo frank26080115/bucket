@@ -5,10 +5,10 @@ This is a tool made to transfer and backup photos from a professional camera whi
 
 ![](doc/pics/pic_title.jpg)
 
-Problem
+The Problem
 ----
 
-The problem I'm trying to solve is a really stupid first-world-problem... While on photography trips, I'm running out of storage on my camera's memory cards. They are expensive memory cards and I can't buy too many of them. I don't want to go back to a hotel before clearing out a memory card either.
+ While on photography trips, I'm running out of storage on my camera's memory cards. They are expensive memory cards and I can't buy too many of them ($400 for 160 GB, and the camera needs two). I don't want to go back to a hotel before clearing out a memory card either.
 
 So the strategy is to wirelessly transfer the files into a cheaper-slower-but-bigger storage device (TB sized USB disks) simultaneously as the camera is shooting. The slower speed should be fine because the transfers will happen during the down-time, when I'm walking around not taking pictures. USB disks at this size typically cost just a bit over $100 (genuine, authentic, non-scam ones) and require USB-3.0 ports.
 
@@ -18,6 +18,8 @@ This project needs to be done by late June of 2022, my next vacation. (I hope th
 
 Features
 ----
+
+![](doc/pics/diagram_of_system.png)
 
 Runs as a FTP server for professional cameras to transfer photos into. A redundant copy of the photo is made if 2 USB disks are inserted. (most professional cameras have two card slots for the purpose of having redundancy as well)
 
