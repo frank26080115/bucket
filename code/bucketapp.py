@@ -647,7 +647,17 @@ class BucketApp:
         higher_batt = max(batt_chgs)
         if higher_batt < self.batt_lowest:
             if self.batt_lowest >= LOW_BATT_THRESH and higher_batt < LOW_BATT_THRESH:
-                self.alarm_reason |= ALARMFLAG_BATTLOW
+                suppress = False
+                # do not buzz if powered by USB
+                if self.ux_frame_cnt < 10:
+                    all_zero = True
+                    for i in batt_volts:
+                        if i > 0:
+                            all_zero = False
+                    if all_zero:
+                        suppress = True
+                if not suppress:
+                    self.alarm_reason |= ALARMFLAG_BATTLOW
             self.batt_lowest = higher_batt
         s = "BATT: "
         if not demo:
