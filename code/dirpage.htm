@@ -1,7 +1,5 @@
 <html><head><title>Bucket Home</title>
 <script type="text/javascript" src="jquery.min.js"></script>
-<!--<script type="text/javascript" src="simple-lightbox.jquery.min.js"></script>-->
-<!--<link href='simple-lightbox.min.css' rel='stylesheet' type='text/css'>-->
 <link href='style.css' rel='stylesheet' type='text/css'>
 <script type="text/javascript">
 
@@ -57,6 +55,8 @@ document.addEventListener("DOMContentLoaded", function() {
         }
     });
 
+    document.getElementById("foot_content").innerHTML += "<button onclick=\"mark_rest_delete()\">Unmarked to Delete</button><br /><br /><button onclick=\"actually_delete()\">Delete Marked from File System</button>";
+
     lazyloading_init();
 });
 
@@ -106,9 +106,22 @@ function keepdel_img(id, keep_or_delete) {
       })
       .fail(function() {
         console.log( "ajax failed " + aurl );
+        alert("ERROR: Image marking AJAX request failed!");
       })
       .always(function() {
         console.log( "ajax complete " + aurl );
+        while (delete_me.length > 0) {
+            const index = delete_me.indexOf(id);
+            if (index > -1) {
+              delete_me.splice(index, 1);
+            }
+            else {
+                break;
+            }
+        }
+        if (delete_me.length > 0) {
+            delete_img(delete_me[0]);
+        }
       });
 }
 
@@ -118,6 +131,63 @@ function keep_img(id) {
 
 function delete_img(id) {
     keepdel_img(id, "delete");
+}
+
+var delete_me = [];
+
+function mark_rest_delete()
+{
+    console.log("mark_rest_delete");
+    var fields = [];
+    delete_me = [];
+    $(".imgfield").each(function(idx) {
+        fields.push($(this).attr('id'));
+    });
+    for (let i = 0; i < fields.length; i++)
+    {
+        var keep = false;
+        for (let j = i - 1; j <= i + 1; j++)
+        {
+            if (j < 0) {
+                continue;
+            }
+            if (j >= fields.length) {
+                continue;
+            }
+            field_next = fields[j];
+            field_next = $("#" + field_next).get(0);
+            if (field_next.classList.contains("imgkept") || field_next.classList.contains("imgfield_kept")) {
+                keep = true;
+            }
+        }
+        if (keep == false) {
+            delete_me.push(fields[i]);
+        }
+    }
+    if (delete_me.length > 0) {
+        delete_img(delete_me[0]);
+    }
+}
+
+function actually_delete() {
+    var user_confirmed = confirm("Do you actually want to delete the files marked for delete?");
+    if (user_confirmed == false) {
+        return;
+    }
+    var aurl = "/actuallydelete?dir=" + encodeURIComponent($("div#title_holder").first().text());
+    var jqxhr = $.get( aurl )
+      .done(function(data, textStatus, jqXHR) {
+        console.log( "ajax success " + aurl );
+        alert("To-Be-Deleted folder deleted successfully! " + data + " files");
+        location.reload();
+      })
+      .fail(function() {
+        console.log( "ajax failed " + aurl );
+        alert("ERROR: folder delete AJAX request failed!");
+      })
+      .always(function() {
+        console.log( "ajax complete " + aurl );
+      });
 }
 
 </script>
@@ -144,6 +214,8 @@ function delete_img(id) {
 </div>
 
 <div id="main_content"></div>
+<hr />
+<div id="foot_content"></div>
 
 </body>
 </html>

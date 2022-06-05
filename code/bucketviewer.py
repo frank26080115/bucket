@@ -112,7 +112,7 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
                             if fe.lower() == ".jpg" or fe.lower() == ".arw":
                                 classes = " imgkept" if f in files_kept else (" imgdeleted" if f in files_del else "")
                                 writeout("<a href=\"" + p + "\" class=\"imgurl" + classes + "\">" + p + "</a><br />\r\n", htmlfile, self.wfile)
-                        writeout("</div><div id=\"main_content\"></div>", htmlfile, self.wfile)
+                        writeout("</div><div id=\"main_content\"></div><hr /><div id=\"foot_content\"></div>", htmlfile, self.wfile)
                     writeout("</body></html>", htmlfile, self.wfile)
                 return
 
@@ -188,6 +188,29 @@ class BucketHttpHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        # handle command
+        if self.path.startswith("/actuallydelete"):
+            deletename = urllib.parse.unquote(query_components["dir"])
+            dp = os.path.join(dir, deletename, "delete", "*")
+            dg = glob.glob(dp)
+            dc = 0
+            if os.name == "nt":
+                print("deleting \"%s\"" % dp)
+                print(dg)
+                dc = len(dg)
+            else:
+                for i in dg:
+                    try:
+                        os.remove(dg)
+                        dc += 1
+                    except:
+                        pass
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(bytes("%u" % dc, "utf-8"))
+            return
+
 def get_webfilepath(fname):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), fname)
 
@@ -223,12 +246,12 @@ def keep_file(vpath, dirword = "keep", canrecurse = True, fromhttp = True):
         fpathtail = os.path.abspath(fpath2)[len(dir):]
 
     kpath = get_kept_name(fpath2, dirname = dirword)
-    os.makedirs(os.path.dirname(kpath), exist_ok=True)
 
     if os.path.isfile(fpath2) == False:
         fpath2 = find_existing_image_file(fpath2)
 
     if os.path.isfile(fpath2) and os.path.isfile(kpath) == False:
+        os.makedirs(os.path.dirname(kpath), exist_ok=True)
         os.rename(fpath2, kpath)
     elif os.path.isfile(fpath2) and os.path.isfile(kpath) == True and os.getsize(kpath) <= 0:
         os.remove(kpath)
@@ -246,8 +269,8 @@ def keep_file(vpath, dirword = "keep", canrecurse = True, fromhttp = True):
                     else:
                         fpath2 = os.path.join(dir, fpathtail)
                     kpath = get_kept_name(fpath2, dirname = dirword)
-                    os.makedirs(os.path.dirname(kpath), exist_ok=True)
                     if os.path.isfile(fpath2) and os.path.isfile(kpath) == False:
+                        os.makedirs(os.path.dirname(kpath), exist_ok=True)
                         os.rename(fpath2, kpath)
                     elif os.path.isfile(fpath2) and os.path.isfile(kpath) == True and os.getsize(kpath) <= 0:
                         os.remove(kpath)
